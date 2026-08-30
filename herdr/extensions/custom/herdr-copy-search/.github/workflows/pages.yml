@@ -1,0 +1,58 @@
+# GitHub Pages: build the Zensical docs site in website/ and deploy it.
+# The site is intentionally separate from the docs/ checklists. The
+# demo videos are single-source in demo/ and copied into the build.
+# Adapted from the workflow `zensical new` generates (build in the
+# website/ subdir; artifact is website/site).
+#
+# ONE-TIME MANUAL STEP (repo owner): GitHub -> Settings -> Pages ->
+# Build and deployment -> Source: "GitHub Actions".
+#
+# STATUS: UNVERIFIED - authored 2026-07-08; never executed (the recent
+# work is not pushed yet and Pages is not enabled). Verify on the first
+# push after Pages is enabled, then delete this status block.
+name: pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "website/**"
+      - "demo/*.mp4"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/configure-pages@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: 3.x
+      # Pinned; keep in lockstep with the `zensical` version in justfile.
+      - run: pip install zensical==0.0.47
+      - name: Copy demo videos into the site sources
+        run: |
+          mkdir -p website/docs/demo
+          cp demo/copy.mp4 demo/extract.mp4 website/docs/demo/
+      - name: Build the site
+        working-directory: website
+        run: zensical build --clean
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: website/site
+      - uses: actions/deploy-pages@v5
+        id: deployment

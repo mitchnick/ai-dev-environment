@@ -1,0 +1,13 @@
+{
+  "name": "pi-claude-compat-local",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "smoke": "node smoke.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "minimatch": "^10.0.3"
+  }
+}

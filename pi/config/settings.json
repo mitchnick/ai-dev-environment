@@ -1,0 +1,74 @@
+{
+  "lastChangelogVersion": "0.84.4",
+  "theme": "claude-monokai",
+  "quietStartup": true,
+  "externalEditor": "code --wait",
+  "defaultProjectTrust": "ask",
+  "tuiMode": "regular",
+  "fullscreenExitOutput": "resume-hint",
+  "defaultProvider": "openrouter",
+  "defaultModel": "stealth/ox-alpha",
+  "defaultThinkingLevel": "high",
+  "enabledModels": [
+    "openai-codex/gpt-5.6-sol",
+    "openai-codex/gpt-5.6-terra",
+    "openai-codex/gpt-5.6-luna",
+    "anthropic/claude-fable-5",
+    "anthropic/claude-haiku-4-5",
+    "anthropic/claude-opus-5",
+    "anthropic/claude-sonnet-5",
+    "xai/*"
+  ],
+  "hideThinkingBlock": true,
+  "compaction": {
+    "enabled": true
+  },
+  "showHardwareCursor": false,
+  "editorPaddingX": 2,
+  "steeringMode": "one-at-a-time",
+  "followUpMode": "one-at-a-time",
+  "terminal": {
+    "showTerminalProgress": false
+  },
+  "packages": [
+    "npm:@pi-plugins/usage",
+    "npm:pi-paster",
+    "npm:pi-claude-code-ui",
+    "npm:pi-web-access",
+    "npm:context-mode",
+    "npm:pi-subagents",
+    "npm:@juicesharp/rpiv-ask-user-question",
+    "npm:@juicesharp/rpiv-todo",
+    "npm:pi-autoresearch@1.6.2"
+  ],
+  "subagents": {
+    "defaultModel": "openai-codex/gpt-5.6-terra",
+    "defaultThinking": "medium",
+    "agentOverrides": {
+      "scout": {
+        "model": "openai-codex/gpt-5.6-luna",
+        "thinking": "low"
+      },
+      "delegate": {
+        "model": "openai-codex/gpt-5.6-terra",
+        "thinking": "medium"
+      },
+      "researcher": {
+        "model": "openai-codex/gpt-5.6-terra",
+        "thinking": "medium"
+      },
+      "worker": {
+        "model": "openai-codex/gpt-5.6-terra",
+        "thinking": "medium"
+      },
+      "reviewer": {
+        "model": "openai-codex/gpt-5.6-terra",
+        "thinking": "medium"
+      },
+      "oracle": {
+        "model": "openai-codex/gpt-5.6-sol",
+        "thinking": "high"
+      }
+    }
+  }
+}

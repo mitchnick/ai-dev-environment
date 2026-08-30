@@ -1,0 +1,17 @@
+#!/bin/bash
+# Opens a 2x2 Ghostty split layout in the current directory
+DIR="${1:-$(pwd)}"
+
+osascript <<EOF
+tell application "Ghostty"
+    activate
+    set cfg to new surface configuration
+    set initial working directory of cfg to "$DIR"
+
+    set win to new window with configuration cfg
+    set tl to terminal 1 of selected tab of win
+    set tr to split tl direction right with configuration cfg
+    set bl to split tl direction down with configuration cfg
+    set br to split tr direction down with configuration cfg
+end tell
+EOF

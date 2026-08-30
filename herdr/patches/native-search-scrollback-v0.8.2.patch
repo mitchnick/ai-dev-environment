@@ -1,0 +1,220 @@
+diff --git a/src/app/input/copy_mode.rs b/src/app/input/copy_mode.rs
+index 8bdbfd38..01a08032 100644
+--- a/src/app/input/copy_mode.rs
++++ b/src/app/input/copy_mode.rs
+@@ -75,6 +75,11 @@ impl AppState {
+         self.mode = Mode::Copy;
+     }
+
++    pub(crate) fn enter_copy_search(&mut self, terminal_runtimes: &TerminalRuntimeRegistry) {
++        self.enter_copy_mode(terminal_runtimes);
++        self.open_copy_mode_search(CopyModeSearchDirection::Forward);
++    }
++
+     pub(crate) fn handle_copy_mode_key(
+         &mut self,
+         terminal_runtimes: &TerminalRuntimeRegistry,
+@@ -1175,6 +1180,23 @@ mod tests {
+         );
+     }
+
++    #[tokio::test]
++    async fn enter_copy_search_opens_forward_search_prompt() {
++        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
++
++        app.state.enter_copy_search(&app.terminal_runtimes);
++
++        let prompt = app
++            .state
++            .copy_mode
++            .as_ref()
++            .and_then(|copy_mode| copy_mode.search.prompt.as_ref())
++            .expect("search prompt");
++        assert_eq!(app.state.mode, Mode::Copy);
++        assert_eq!(prompt.direction, CopyModeSearchDirection::Forward);
++        assert!(prompt.query.is_empty());
++    }
++
+     #[tokio::test]
+     async fn copy_mode_ctrl_b_uses_page_up() {
+         let bytes = numbered_lines_bytes(64);
+diff --git a/src/app/input/navigate.rs b/src/app/input/navigate.rs
+index 2cb657a7..420dd0d4 100644
+--- a/src/app/input/navigate.rs
++++ b/src/app/input/navigate.rs
+@@ -109,7 +109,10 @@ impl App {
+             self.cancel_copy_mode_if_active();
+             self.launch_focused_scrollback_editor();
+             finish_action_context(&mut self.state, ActionContext::Prefix, previous_mode);
+-        } else if action == NavigateAction::CopyMode {
++        } else if matches!(
++            action,
++            NavigateAction::CopyMode | NavigateAction::SearchScrollback
++        ) {
+             self.cancel_copy_mode_if_active();
+             self.execute_tui_navigate_action(action, ActionContext::Prefix);
+         } else if copy_mode_survives_prefix_action(action) {
+@@ -390,6 +393,9 @@ impl App {
+             }
+             NavigateAction::EditScrollback => {}
+             NavigateAction::CopyMode => self.state.enter_copy_mode(&self.terminal_runtimes),
++            NavigateAction::SearchScrollback => {
++                self.state.enter_copy_search(&self.terminal_runtimes)
++            }
+             NavigateAction::Zoom => {
+                 self.zoom_focused_pane_via_api();
+                 leave_navigate_mode(&mut self.state);
+@@ -1415,6 +1421,7 @@ pub(crate) enum NavigateAction {
+     ClosePane,
+     EditScrollback,
+     CopyMode,
++    SearchScrollback,
+     Zoom,
+     EnterResizeMode,
+     ResizePaneLeft,
+@@ -1551,6 +1558,7 @@ fn non_indexed_action_for_key(
+         (&kb.rename_pane, NavigateAction::RenamePane),
+         (&kb.edit_scrollback, NavigateAction::EditScrollback),
+         (&kb.copy_mode, NavigateAction::CopyMode),
++        (&kb.search_scrollback, NavigateAction::SearchScrollback),
+         (&kb.focus_pane_left, NavigateAction::FocusPaneLeft),
+         (&kb.focus_pane_down, NavigateAction::FocusPaneDown),
+         (&kb.focus_pane_up, NavigateAction::FocusPaneUp),
+@@ -1805,6 +1813,7 @@ pub(super) fn execute_navigate_action_in_context(
+         }
+         NavigateAction::EditScrollback => {}
+         NavigateAction::CopyMode => state.enter_copy_mode(terminal_runtimes),
++        NavigateAction::SearchScrollback => state.enter_copy_search(terminal_runtimes),
+         NavigateAction::Zoom => {
+             state.toggle_zoom();
+             leave_navigate_mode(state);
+diff --git a/src/config/keybinds.rs b/src/config/keybinds.rs
+index 6cddd3ac..b630099f 100644
+--- a/src/config/keybinds.rs
++++ b/src/config/keybinds.rs
+@@ -336,6 +336,7 @@ pub struct Keybinds {
+     pub rename_pane: ActionKeybinds,
+     pub edit_scrollback: ActionKeybinds,
+     pub copy_mode: ActionKeybinds,
++    pub search_scrollback: ActionKeybinds,
+     pub focus_pane_left: ActionKeybinds,
+     pub focus_pane_down: ActionKeybinds,
+     pub focus_pane_up: ActionKeybinds,
+@@ -504,6 +505,7 @@ impl Config {
+             rename_pane: empty_action!(),
+             edit_scrollback: empty_action!(),
+             copy_mode: empty_action!(),
++            search_scrollback: empty_action!(),
+             focus_pane_left: empty_action!(),
+             focus_pane_down: empty_action!(),
+             focus_pane_up: empty_action!(),
+@@ -651,6 +653,7 @@ impl Config {
+             apply_action!(keybinds.rename_pane, rename_pane, source);
+             apply_action!(keybinds.edit_scrollback, edit_scrollback, source);
+             apply_action!(keybinds.copy_mode, copy_mode, source);
++            apply_action!(keybinds.search_scrollback, search_scrollback, source);
+             apply_action!(keybinds.focus_pane_left, focus_pane_left, source);
+             apply_action!(keybinds.focus_pane_down, focus_pane_down, source);
+             apply_action!(keybinds.focus_pane_up, focus_pane_up, source);
+@@ -1609,6 +1612,30 @@ next_tab = "prefix+n"
+         );
+     }
+
++    #[test]
++    fn search_scrollback_is_unset_by_default_and_accepts_cmd_f() {
++        assert!(Config::default()
++            .keybinds()
++            .search_scrollback
++            .bindings
++            .is_empty());
++
++        let config: Config = toml::from_str(
++            r#"
++[keys]
++search_scrollback = "cmd+f"
++"#,
++        )
++        .unwrap();
++        assert_eq!(
++            binding_triggers(&config.keybinds().search_scrollback),
++            vec![BindingTrigger::Direct((
++                KeyCode::Char('f'),
++                KeyModifiers::SUPER
++            ))]
++        );
++    }
++
+     #[test]
+     fn back_and_forth_keybinds_are_unset_by_default() {
+         let kb = Config::default().keybinds();
+diff --git a/src/config/model.rs b/src/config/model.rs
+index c10cd733..86ca0a23 100644
+--- a/src/config/model.rs
++++ b/src/config/model.rs
+@@ -414,6 +414,8 @@ pub struct KeysConfig {
+     pub edit_scrollback: BindingConfig,
+     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
+     pub copy_mode: BindingConfig,
++    /// Search the focused pane's scrollback. Unset by default.
++    pub search_scrollback: BindingConfig,
+     /// Focus the pane to the left. Default: "prefix+h".
+     pub focus_pane_left: BindingConfig,
+     /// Focus the pane below. Default: "prefix+j".
+@@ -546,6 +548,8 @@ pub(crate) struct KeysConfigOverlay {
+     #[serde(skip_serializing_if = "Option::is_none")]
+     copy_mode: Option<BindingConfig>,
+     #[serde(skip_serializing_if = "Option::is_none")]
++    search_scrollback: Option<BindingConfig>,
++    #[serde(skip_serializing_if = "Option::is_none")]
+     focus_pane_left: Option<BindingConfig>,
+     #[serde(skip_serializing_if = "Option::is_none")]
+     focus_pane_down: Option<BindingConfig>,
+@@ -648,6 +652,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
+         apply_field!(rename_pane);
+         apply_field!(edit_scrollback);
+         apply_field!(copy_mode);
++        apply_field!(search_scrollback);
+         apply_field!(focus_pane_left);
+         apply_field!(focus_pane_down);
+         apply_field!(focus_pane_up);
+@@ -752,6 +757,7 @@ impl KeysConfig {
+         copy_effective_action_field!(rename_pane, keybinds.rename_pane);
+         copy_effective_action_field!(edit_scrollback, keybinds.edit_scrollback);
+         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
++        copy_effective_action_field!(search_scrollback, keybinds.search_scrollback);
+         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
+         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
+         copy_effective_action_field!(focus_pane_up, keybinds.focus_pane_up);
+@@ -1062,6 +1068,7 @@ impl Default for KeysConfig {
+             rename_pane: BindingConfig::one("prefix+shift+p"),
+             edit_scrollback: BindingConfig::one("prefix+e"),
+             copy_mode: BindingConfig::one("prefix+["),
++            search_scrollback: BindingConfig::empty(),
+             focus_pane_left: BindingConfig::one("prefix+h"),
+             focus_pane_down: BindingConfig::one("prefix+j"),
+             focus_pane_up: BindingConfig::one("prefix+k"),
+diff --git a/src/main.rs b/src/main.rs
+index 56dbb8df..87c203e7 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -205,6 +205,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
+ # close_tab = "prefix+shift+x"
+ # rename_pane = "prefix+shift+p"
+ # edit_scrollback = "prefix+e"
++# copy_mode = "prefix+["
++# search_scrollback = "" # optional; opens copy mode with forward search active
+ # focus_pane_left = "prefix+h"
+ # focus_pane_down = "prefix+j"
+ # focus_pane_up = "prefix+k"
+diff --git a/src/ui/keybind_help.rs b/src/ui/keybind_help.rs
+index 1f01c60c..5ebd66ec 100644
+--- a/src/ui/keybind_help.rs
++++ b/src/ui/keybind_help.rs
+@@ -145,6 +145,7 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
+         help_entry(keybind_label(&kb.rename_pane), "rename pane"),
+         help_entry(keybind_label(&kb.edit_scrollback), "edit scrollback"),
+         help_entry(keybind_label(&kb.copy_mode), "copy mode"),
++        help_entry(keybind_label(&kb.search_scrollback), "search scrollback"),
+         help_entry(keybind_label(&kb.zoom), "zoom pane"),
+         help_entry(keybind_label(&kb.resize_mode), "resize mode"),
+         help_entry(keybind_label(&kb.resize_pane_left), "resize pane left"),

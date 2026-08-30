@@ -1,0 +1,334 @@
+# Herdr Configuration
+# Stored in OneDrive for backup, symlinked to ~/.config/herdr/config.toml
+# Tuned to match Ghostty (Monokai Pro Spectrum, 0.95 opacity, 20px blur)
+
+[theme]
+# "terminal" follows Ghostty's ANSI palette. Anything not overridden below
+# tracks your Ghostty theme automatically if you ever switch it.
+name = "terminal"
+
+[theme.custom]
+# Monokai Pro Spectrum
+
+# "reset" leaves panels transparent so background-opacity 0.95 and
+# background-blur-radius 20 still show through. Do not set a hex here.
+panel_bg = "reset"
+
+# Greyscale ramp. surface1 draws the INACTIVE pane border, so it has to sit
+# below the accent below or focus reads backwards.
+surface_dim = "#191919"
+surface0    = "#2d2c2d"
+surface1    = "#363537"
+overlay0    = "#69676c"
+overlay1    = "#8b888f"
+subtext0    = "#bab6c0"
+text        = "#f7f1ff"
+
+# Accents — same hexes Ghostty loads for palette 1-6
+red    = "#fc618d"
+green  = "#7bd88f"
+yellow = "#fce566"
+peach  = "#fd9353"
+mauve  = "#948ae3"
+teal   = "#5ad4e6"
+blue   = "#5ad4e6"  # Monokai Pro has no separate blue; reuses the cyan
+
+# One step above the #222222 background — a hairline, not a box. Closest
+# thing to Ghostty's split-divider-color = #131313 now that there is no
+# unfocused dimming. Dial up the ramp if it vanishes: #525053, then #69676c.
+accent = "#8b888f"
+
+[keys]
+# Ghostty runs `keybind = clear` and keeps only host-level chords, so every cmd combo
+# below reaches Herdr through the Kitty keyboard protocol. Each action takes an array:
+# the Ghostty chord you already know, plus the prefix fallback. Keep both — cmd chords
+# do not survive `herdr --remote` over SSH, the prefix layer does.
+prefix = "ctrl+b"
+
+# --- Spaces ---
+switch_workspace   = ["cmd+alt+1..9",   "prefix+shift+1..9"]
+previous_workspace = ["cmd+alt+up",     "prefix+up"]
+next_workspace     = ["cmd+alt+down",   "prefix+down"]
+new_workspace      = ["cmd+n",          "prefix+shift+n"]
+close_workspace    = ["cmd+shift+w",    "prefix+shift+d"]
+workspace_picker   = ["cmd+shift+p",    "prefix+w"]
+goto               = ["cmd+g",          "prefix+g"]
+
+# --- Agents ---
+previous_agent = ["cmd+alt+shift+up",   "cmd+shift+up",   "prefix+shift+up"]
+next_agent     = ["cmd+alt+shift+down", "cmd+shift+down", "prefix+shift+down"]
+
+# --- Tabs ---
+switch_tab   = ["cmd+1..9",      "prefix+1..9"]
+previous_tab = ["cmd+alt+left",  "cmd+shift+left",  "prefix+p", "prefix+left"]
+next_tab     = ["cmd+alt+right", "cmd+shift+right", "prefix+n", "prefix+right"]
+new_tab      = ["cmd+t",         "prefix+c"]
+close_tab    = ["cmd+alt+w",     "prefix+shift+x"]
+rename_tab   = ["cmd+shift+t",   "prefix+shift+t"]
+
+# --- Panes ---
+# split_vertical is the side-by-side one. Swap these two lines if cmd+d splits downward.
+split_vertical      = ["cmd+d",           "prefix+v", "prefix+d"]
+split_horizontal    = ["cmd+shift+d",     "prefix+minus"]
+close_pane          = ["cmd+w",           "prefix+x"]
+zoom                = ["cmd+shift+enter", "prefix+z"]
+cycle_pane_next     = ["cmd+]",           "prefix+tab"]
+cycle_pane_previous = ["cmd+[",           "prefix+shift+tab"]
+toggle_sidebar      = ["cmd+b",           "prefix+b"]
+resize_mode         = ["cmd+ctrl+r",      "prefix+r"]
+copy_mode           = "prefix+["
+
+# Defaults left alone: prefix+h/j/k/l focus a pane, prefix+e edits scrollback,
+# prefix+s settings, prefix+? help, prefix+q detach.
+
+# --- Plugin actions ---
+# Herdr has no built-in binding for moving a pane across tabs, and plugin
+# manifests cannot declare keys, so they are bound here. These MUST stay at the
+# end of [keys]: once a [[keys.command]] table opens, later bare keys would be
+# read as fields of it.
+#
+# Avoided on purpose: prefix+g (goto, above), prefix+shift+g (worktree create),
+# prefix+shift+l (default swap_pane_right). All three plugins ship prefix+m as
+# their default, which is why only pane-mover gets it.
+
+# Move the focused pane. cmd+m opens straight on the tab list — the thing I
+# actually want 90% of the time. cmd+shift+m opens the root menu (re-split,
+# swap, new tab, new workspace). The "open-tabs" action is a local patch; see
+# ~/.config/herdr/plugins/local/herdr-pane-mover (linked, not installed).
+[[keys.command]]
+key = "cmd+m"
+type = "plugin_action"
+command = "osamahbeig.pane-mover.open-tabs"
+description = "move this pane to another tab"
+
+[[keys.command]]
+key = "prefix+m"
+type = "plugin_action"
+command = "osamahbeig.pane-mover.open-tabs"
+description = "move this pane to another tab"
+
+[[keys.command]]
+key = "cmd+shift+m"
+type = "plugin_action"
+command = "osamahbeig.pane-mover.open"
+description = "pane move menu (re-split, swap, new tab)"
+
+[[keys.command]]
+key = "prefix+shift+m"
+type = "plugin_action"
+command = "osamahbeig.pane-mover.open"
+description = "pane move menu (re-split, swap, new tab)"
+
+# Reshape the current tab: big pane left, the rest as a 2-row grid on the right.
+[[keys.command]]
+key = "cmd+ctrl+g"
+type = "plugin_action"
+command = "edi.layout-tools.reshape-main-grid"
+description = "reshape tab into main + grid"
+
+[[keys.command]]
+key = "prefix+shift+r"
+type = "plugin_action"
+command = "edi.layout-tools.reshape-main-grid"
+description = "reshape tab into main + grid"
+
+# Even out split ratios without changing the arrangement.
+[[keys.command]]
+key = "cmd+ctrl+e"
+type = "plugin_action"
+command = "edi.layout-tools.equalize"
+description = "equalize split ratios"
+
+[[keys.command]]
+key = "prefix+shift+e"
+type = "plugin_action"
+command = "edi.layout-tools.equalize"
+description = "equalize split ratios"
+
+# Interactive layout editor pane.
+[[keys.command]]
+key = "prefix+shift+o"
+type = "plugin_action"
+command = "edi.layout-tools.open-editor"
+description = "open layout editor"
+
+# Also available, unbound: edi.layout-tools.reshape-main-left (main + single
+# right column, no grid).
+
+# --- Reorder the current tab ---
+# cmd+alt+left/right walk between tabs, so the shift variant drags the tab
+# itself — same chord family, one more modifier. Herdr 0.8.0 exposes tab.move
+# over the socket API but binds no key to it and ships no `herdr tab move`
+# subcommand, so this goes through a script: ~/.local/bin/herdr-move-tab, which
+# resolves the focused tab and no-ops at either end of the bar.
+#
+# Absolute path on purpose. type = "shell" inherits the server's PATH, not an
+# interactive shell's, so ~/.local/bin is not guaranteed to be on it.
+#
+# No up/down pair to match cmd+alt+up/down: tab.move takes only an insert_index,
+# with no workspace field, so there is no "throw this tab at the next space".
+[[keys.command]]
+key = "cmd+shift+alt+left"
+type = "shell"
+command = "~/.local/bin/herdr-move-tab left"
+description = "move this tab left"
+
+[[keys.command]]
+key = "prefix+shift+left"
+type = "shell"
+command = "~/.local/bin/herdr-move-tab left"
+description = "move this tab left"
+
+[[keys.command]]
+key = "cmd+shift+alt+right"
+type = "shell"
+command = "~/.local/bin/herdr-move-tab right"
+description = "move this tab right"
+
+[[keys.command]]
+key = "prefix+shift+right"
+type = "shell"
+command = "~/.local/bin/herdr-move-tab right"
+description = "move this tab right"
+
+# --- Agents panel views ---
+# Both built-in agent_panel_sort policies moved the rows around. "priority" re-sorted on
+# every agent state change. "spaces" is focus-relative: jumping to another space floats
+# that space's agents to the top and pushes the rest down. So the panel runs on an
+# explicit projection instead, via agent.view.set — socket-only, no CLI subcommand, so it
+# goes through a script: ~/.local/bin/herdr-agent-view.
+#
+#   rest       every agent, absolute space/tab/pane order. Identical no matter what is
+#              focused. This is the resting state.
+#   attention  the same order, narrowed to the current space plus anything blocked or
+#              done elsewhere.
+#
+# This chord flips between the two. A view narrows next_agent/previous_agent and indexed
+# focus too, not just the drawn rows — which is why attention is a toggle, not the resting
+# state. `herdr-agent-view off` drops back to agent_panel_sort below.
+#
+# The projection is transient and dies with the server, so
+# ~/Library/LaunchAgents/io.mitchnick.herdr-agent-view.plist re-applies it after a restart.
+#
+# Absolute path on purpose: type = "shell" inherits the server's PATH.
+
+[[keys.command]]
+key = "cmd+alt+a"
+type = "shell"
+command = "~/.local/bin/herdr-agent-view toggle"
+description = "agents panel: all <-> attention"
+
+[[keys.command]]
+key = "prefix+a"
+type = "shell"
+command = "~/.local/bin/herdr-agent-view toggle"
+description = "agents panel: all <-> attention"
+
+[ui]
+# Active pane borders, sidebar highlights, navigate mode — one setting for all three.
+accent = "#8b888f"
+
+# Ghostty draws a native tab row (macos-titlebar-style = tabs), so "top" stacks
+# two tab bars. Set Ghostty's macos-titlebar-style = hidden to avoid that.
+tab_bar_position = "top"
+hide_tab_bar_when_single_tab = true
+
+# Matches Ghostty's copy-on-select = clipboard
+copy_on_select = true
+
+# Ghostty's cursor-style = block, cursor-style-blink = false.
+# "auto" uses the native terminal cursor on macOS, so it inherits both.
+host_cursor = "auto"
+
+pane_borders = true
+pane_gaps = true
+
+# Capture single clicks so switching panes does not require a second click.
+# Flip to false if you want Cmd-click-to-open-URL back in Ghostty.
+mouse_capture = true
+
+# Uncomment if the blur causes visible flashing when refocusing Ghostty.
+# redraw_on_focus_gained = false
+
+agent_panel_sort = "spaces"
+
+# Account-wide Claude and OpenAI usage lives here instead of in every pane's
+# statusline. ~/.local/bin/herdr-usage pushes it to the LAST space every two
+# minutes, so it draws once at the foot of the spaces list. Empty token rows
+# collapse, so every other space stays two rows.
+#
+# Sidebar token colors are static, so the statusline's <50/<80/else thresholds
+# become three token slots per metric. herdr-usage fills exactly one of each
+# triplet and clears the other two.
+#
+# One metric per row keeps labels and percentages aligned without truncation.
+# Claude contributes 5h, 7d, and Fable. OpenAI contributes its main weekly
+# limit. Each window that has a reset carries it on its own row: the 5h window
+# resets today, so it shows a clock and a time; the 7d and OpenAI windows reset
+# days out, so they show a calendar and a date.
+#
+#   5h       18%   2:19pm
+#   7d      100%   08/26
+#   fable    64%
+#   openai    7%   08/24
+#
+# The columns are made of padding, not layout — Herdr just concatenates tokens.
+# herdr-usage pads every label to 6 and every number to 4 to build the grid.
+#
+# Gray label + colored number needs two tokens, because Herdr styles a whole
+# token or nothing. It also joins tokens with a hardcoded " · " (a fixed string
+# in the binary, no config for it). That dot is the cost of getting the
+# statusline's gray labels back.
+[ui.sidebar.agents]
+# Show the generated pane label beneath an agent when that session reports one.
+# Empty metadata rows collapse, so unlabeled sessions stay on one row.
+rows = [
+  ["state_icon", "workspace", "tab"],
+  [{ token = "$auto_label", fg = "#8b888f", dim = true }],
+]
+
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  [
+    { token = "$ul5",    fg = "#8b888f", dim = true },
+    { token = "$u5lo",   fg = "#7bd88f" },
+    { token = "$u5mid",  fg = "#fce566" },
+    { token = "$u5hi",   fg = "#fc618d" },
+    { token = "$uclk",   fg = "#8b888f", dim = true },
+  ],
+  [
+    { token = "$ul7",    fg = "#8b888f", dim = true },
+    { token = "$u7lo",   fg = "#7bd88f" },
+    { token = "$u7mid",  fg = "#fce566" },
+    { token = "$u7hi",   fg = "#fc618d" },
+    { token = "$ucal",   fg = "#8b888f", dim = true },
+  ],
+  [
+    { token = "$ulfb",   fg = "#8b888f", dim = true },
+    { token = "$ufblo",  fg = "#7bd88f" },
+    { token = "$ufbmid", fg = "#fce566" },
+    { token = "$ufbhi",  fg = "#fc618d" },
+  ],
+  [
+    { token = "$ulcx",   fg = "#8b888f", dim = true },
+    { token = "$ucxlo",  fg = "#7bd88f" },
+    { token = "$ucxmid", fg = "#fce566" },
+    { token = "$ucxhi",  fg = "#fc618d" },
+    { token = "$uocal",  fg = "#8b888f", dim = true },
+  ],
+]
+
+[ui.toast]
+# Hands notifications to Ghostty, which raises native macOS ones.
+delivery = "terminal"
+delay_seconds = 1
+
+# [terminal]
+# Ghostty opens new windows at ~/Projects. Herdr defaults to "follow" so a
+# split stays inside the workspace's repo — usually what you want here.
+# new_cwd = "follow"
+
+# [experimental]
+# Ghostty speaks the Kitty graphics protocol, so this one is safe to try.
+# kitty_graphics = true

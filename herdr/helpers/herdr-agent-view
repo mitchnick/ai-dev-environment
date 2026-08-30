@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""herdr-agent-view — pin the Agents panel to a fixed order, with an attention view on a key.
+
+Two things made the panel restless:
+
+  1. ui.agent_panel_sort = "priority" re-sorted it on every agent state change.
+  2. ui.agent_panel_sort = "spaces" is focus-relative — jumping to another space floats
+     that space's agents to the top and pushes the rest down.
+
+Both are policy. agent.view.set replaces the policy with an explicit projection, so the
+"rest" mode below is one absolutely-ordered global list that looks identical no matter
+which space is focused. "attention" is the same order, narrowed to what wants you.
+
+Usage:
+  herdr-agent-view [toggle|rest|attention|off|ensure|status]
+
+  toggle     attention <-> rest (bound to cmd+alt+a / prefix+a)
+  rest       fixed global list, every agent, absolute space/tab/pane order
+  attention  current space, plus anything blocked or done elsewhere
+  off        clear the view entirely, fall back to ui.agent_panel_sort
+  ensure     re-apply the recorded mode if the server restarted (LaunchAgent)
+  status     print the mode
+
+agent.view.set is socket-only — there is no `herdr agent view` CLI subcommand. It is a
+presentation projection: it drives the expanded sidebar, the collapsed rail, mouse
+targets, indexed focus, and next/previous agent, but NOT agent.list, notifications, or
+detection. It is transient and dies with the server, which is what `ensure` is for.
+
+State lives in a file because there is no agent.view.get, and agent.view.clear answers
+`active: false` whether it cleared our view or found nothing — the two cases are
+indistinguishable from the response. The file pairs the mode with the mtime of
+herdr.sock, which is the server's boot time, so a restart invalidates it for free.
+"""
+
+import json
+import os
+import socket
+import sys
+
+SOCK = os.path.expanduser("~/.config/herdr/herdr.sock")
+STATE = os.path.expanduser("~/.config/herdr/agent-view.state")
+CONFIG = os.path.expanduser("~/.config/herdr/config.toml")
+
+# Must not start with "plugin:" — that prefix is validated against the plugin registry.
+SOURCE = "herdr-agent-view"
+
+# Purely spatial, absolute. Sorts are stable and evaluated in order, so neither a state
+# change nor a workspace switch moves a row. Never put "attention" in this list.
+SORT = [
+	{"field": "workspace_order", "order": "asc"},
+	{"field": "tab_order", "order": "asc"},
+	{"field": "pane_order", "order": "asc"},
+]
+
+# Anything in the space I am looking at, plus anything blocked or done anywhere else.
+# "done" is idle-and-not-yet-seen, so it means finished work I have not read.
+ATTENTION_FILTER = {
+	"op": "any",
+	"filters": [
+		{"op": "eq", "field": "workspace_id", "value": {"context": "current_workspace_id"}},
+		{"op": "in", "field": "status", "values": ["blocked", "done"]},
+	],
+}
+
+VIEWS = {
+	"rest": {"source": SOURCE, "label": "all agents", "sort": SORT},
+	"attention": {"source": SOURCE, "label": "attention", "filter": ATTENTION_FILTER, "sort": SORT},
+}
+
+
+def call(method, params=None):
+	s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+	s.connect(SOCK)
+	s.sendall((json.dumps({"id": "herdr-agent-view", "method": method, "params": params or {}}) + "\n").encode())
+	buf = b""
+	while not buf.endswith(b"\n"):
+		chunk = s.recv(65536)
+		if not chunk:
+			break
+		buf += chunk
+	s.close()
+	res = json.loads(buf.decode())
+	if "error" in res:
+		sys.exit(f"herdr-agent-view: {res['error'].get('code')}: {res['error'].get('message')}")
+	return res["result"]
+
+
+def boot_marker():
+	"""The socket is recreated at server start, so its mtime identifies this server run."""
+	return str(int(os.stat(SOCK).st_mtime))
+
+
+def read_state():
+	"""Return the applied mode, or None if the record is missing or from an older server."""
+	try:
+		with open(STATE) as f:
+			marker, _, mode = f.read().strip().partition(" ")
+	except OSError:
+		return None
+	return mode if marker == boot_marker() and mode in ("rest", "attention", "off") else None
+
+
+def stale():
+	"""True when the live server is probably not showing the recorded mode any more.
+
+	Two ways it drifts: the server restarted (boot marker moves), or config.toml was
+	reloaded — a reload sets changes_ui, and there is no way to read the active view back
+	to find out whether it survived. Both are a stat(), so the steady state costs nothing.
+	"""
+	if read_state() is None:
+		return True
+	try:
+		return os.path.getmtime(CONFIG) > os.path.getmtime(STATE)
+	except OSError:
+		return False
+
+
+def write_state(mode):
+	with open(STATE, "w") as f:
+		f.write(f"{boot_marker()} {mode}\n")
+
+
+def waiting_count():
+	"""agent.list is deliberately unaffected by the active view, so this stays honest."""
+	agents = call("agent.list").get("agents", [])
+	return sum(1 for a in agents if a.get("agent_status") in ("blocked", "done"))
+
+
+def toast(title, body):
+	call("notification.show", {"title": title, "body": body, "sound": "none"})
+
+
+def apply(mode, announce=True):
+	if mode == "off":
+		# Passing source makes this a no-op if something else owns the view.
+		call("agent.view.clear", {"source": SOURCE})
+		if announce:
+			toast("Agent view cleared", "back to ui.agent_panel_sort")
+	else:
+		call("agent.view.set", VIEWS[mode])
+		if announce and mode == "attention":
+			n = waiting_count()
+			toast("Attention view", "1 agent needs you" if n == 1 else f"{n} agents need you")
+		elif announce:
+			toast("All agents", "fixed order")
+	write_state(mode)
+	return mode
+
+
+def main():
+	action = sys.argv[1] if len(sys.argv) > 1 else "toggle"
+	if not os.path.exists(SOCK):
+		# The server is down. Nothing to project onto, and `ensure` must stay quiet.
+		sys.exit(0 if action == "ensure" else "herdr-agent-view: no herdr socket; is the server running?")
+
+	if action == "status":
+		print(read_state() or "unset")
+	elif action == "ensure":
+		# Only acts when the view probably drifted. Steady state is two stat() calls.
+		if stale():
+			apply(read_state() or "rest", announce=False)
+	elif action in ("rest", "attention", "off"):
+		print(apply(action))
+	elif action == "toggle":
+		print(apply("rest" if read_state() == "attention" else "attention"))
+	else:
+		sys.exit(f"herdr-agent-view: unknown action {action!r} (toggle|rest|attention|off|ensure|status)")
+
+
+if __name__ == "__main__":
+	main()

@@ -1,0 +1,16 @@
+# cargo-release config: no crates.io publish, no auto-push
+# (the release commit and tag stay local; push is a manual step, CL-03).
+publish = false
+push = false
+tag-name = "v{{version}}"
+allow-branch = ["master"]
+# release-hook runs the gate, then regenerates CHANGELOG.md via
+# git-cliff for the version being prepared (see justfile).
+pre-release-hook = ["just", "release-hook"]
+
+# Keep the herdr plugin manifest version in lockstep with Cargo.toml.
+[[pre-release-replacements]]
+file = "herdr-plugin.toml"
+search = "^version = \"[0-9.]+\"$"
+replace = "version = \"{{version}}\""
+exactly = 1

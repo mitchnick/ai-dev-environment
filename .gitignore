@@ -1,0 +1,22 @@
+# Never publish local credentials or runtime state
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*
+*secrets*
+*token*
+*auth.json
+
+# Runtime output
+*.log
+.DS_Store
+node_modules/
+target/
+__pycache__/
+*.pyc
+coverage/
+dist/

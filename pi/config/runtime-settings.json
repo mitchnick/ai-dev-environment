@@ -1,0 +1,20 @@
+{
+  "toolBackground": "transparent",
+  "readOutputMode": "summary",
+  "searchOutputMode": "count",
+  "previewLines": 8,
+  "expandedPreviewMaxLines": 4000,
+  "extraExpandedPreviewMaxLines": 12000,
+  "extraToolOutputExpanded": false,
+  "groupToolCalls": true,
+  "bashOutputMode": "opencode",
+  "bashCollapsedLines": 10,
+  "liveToolPreview": false,
+  "liveToolPreviewLines": 5,
+  "diffCollapsedLines": 24,
+  "showTruncationHints": false,
+  "themeAdaptive": true,
+  "toolBranchColorMode": "theme",
+  "spinnerVerbColor": "accent",
+  "spinnerStatusColor": "muted"
+}

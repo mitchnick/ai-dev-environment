@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/Projects/dotfiles}"
+PI_BIN="${PI_BIN:-$(command -v pi || true)}"
+BUN_BIN="${BUN_BIN:-$(command -v bun || true)}"
+TEST_DIR="$DOTFILES_DIR/pi/extensions/active-pane-ui"
+TEST_FILES=(
+  "$TEST_DIR/render.test.ts"
+  "$TEST_DIR/herdr-focus.test.ts"
+  "$TEST_DIR/extension-order.test.ts"
+)
+
+usage() {
+  cat <<'EOF'
+Usage: pi-update [pi update arguments]
+       pi-update --test-only
+
+Runs the active-pane cursor regression suite before and after `pi update`.
+All normal arguments are forwarded unchanged, for example:
+  pi-update --all
+  pi-update --extensions
+  pi-update npm:pi-paster
+EOF
+}
+
+run_regressions() {
+  local phase="$1"
+  echo "==> Pi cursor regressions ($phase)"
+  "$BUN_BIN" test "${TEST_FILES[@]}"
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ -z "$BUN_BIN" ]]; then
+  echo "pi-update: bun is not installed or not on PATH" >&2
+  exit 1
+fi
+
+if [[ "${1:-}" == "--test-only" ]]; then
+  if [[ $# -ne 1 ]]; then
+    usage >&2
+    exit 2
+  fi
+  run_regressions "test only"
+  exit 0
+fi
+
+if [[ -z "$PI_BIN" ]]; then
+  echo "pi-update: pi is not installed or not on PATH" >&2
+  exit 1
+fi
+
+run_regressions "before update"
+echo "==> $PI_BIN update $*"
+"$PI_BIN" update "$@"
+run_regressions "after update"
+echo "==> Pi update verified"

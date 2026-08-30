@@ -1,0 +1,26 @@
+{
+  "name": "pi-extensions",
+  "private": true,
+  "overrides": {
+    "sharp": "^0.35.0",
+    "@effect/platform-node-shared": "4.0.0-beta.103"
+  },
+  "dependencies": {
+    "@juicesharp/rpiv-ask-user-question": "^2.8.0",
+    "@juicesharp/rpiv-todo": "^2.8.0",
+    "@pi-plugins/usage": "^0.4.0",
+    "context-mode": "^1.0.169",
+    "effect": "4.0.0-beta.103",
+    "pi-autoresearch": "^1.6.2",
+    "pi-claude-code-ui": "^1.0.79",
+    "pi-paster": "^0.2.3",
+    "pi-subagents": "^0.59.0",
+    "pi-web-access": "^0.27.0"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
+  },
+  "scripts": {
+    "postinstall": "patch-package"
+  }
+}

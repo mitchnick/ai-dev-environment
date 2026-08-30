@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""herdr-move-tab — nudge the focused tab one slot along its workspace's tab bar.
+
+herdr 0.8.0 has no keybinding action for this and no `herdr tab move` CLI —
+`herdr tab` stops at list/create/get/focus/rename/close. The socket API does
+expose tab.move, so this wraps it thinly enough to hang a [[keys.command]] of
+type "shell" off it. See the "Reorder the current tab" block in config.toml.
+
+Usage:
+  herdr-move-tab left|right
+
+tab.move's insert_index reads against the order BEFORE the move and means
+"insert ahead of whatever currently sits at this index". So one slot left is
+i-1, and one slot right is i+2 — i+1 is the tab's own position and silently
+does nothing. Verified against 0.8.0 on 2026-08-14.
+
+Valid range is 0..len; len+1 comes back as `tab_move_failed: insert_index out
+of bounds`, so both edges no-op here instead of erroring. No wrap-around.
+
+Reordering does not renumber. A tab keeps the `number` it was created with, so
+whichever cmd+N reached it before still reaches it after — the switch_tab
+digits travel with the tab, not with the slot.
+"""
+
+import json
+import os
+import socket
+import sys
+
+SOCK = os.path.expanduser("~/.config/herdr/herdr.sock")
+
+
+def call(method, params=None):
+	s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+	s.connect(SOCK)
+	s.sendall((json.dumps({"id": "herdr-move-tab", "method": method, "params": params or {}}) + "\n").encode())
+	buf = b""
+	while not buf.endswith(b"\n"):
+		chunk = s.recv(65536)
+		if not chunk:
+			break
+		buf += chunk
+	s.close()
+	res = json.loads(buf.decode())
+	if "error" in res:
+		sys.exit(f"herdr-move-tab: {res['error'].get('code')}: {res['error'].get('message')}")
+	return res["result"]
+
+
+def main(argv):
+	if len(argv) != 1 or argv[0] not in ("left", "right"):
+		sys.exit("usage: herdr-move-tab left|right")
+
+	# tab.list carries both the per-workspace display order and the focus flag,
+	# so it answers the whole question in one round trip. session.snapshot would
+	# too, but it drags every pane and layout along for a keypress.
+	tabs = call("tab.list")["tabs"]
+	current = next((t for t in tabs if t["focused"]), None)
+	if current is None:
+		return 0
+
+	siblings = [t["tab_id"] for t in tabs if t["workspace_id"] == current["workspace_id"]]
+	i = siblings.index(current["tab_id"])
+	insert_index = i - 1 if argv[0] == "left" else i + 2
+	if insert_index < 0 or insert_index > len(siblings):
+		return 0
+
+	call("tab.move", {"tab_id": current["tab_id"], "insert_index": insert_index})
+	return 0
+
+
+if __name__ == "__main__":
+	sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,23 @@
+# herdr config used only while recording the demo videos (CL-04). It is
+# copied to $XDG_CONFIG_HOME/herdr/config.toml inside the vhs container.
+#
+# - onboarding = false skips the first-run settings modal so herdr boots
+#   straight to a pane.
+# - pane_borders = false drops the ring herdr draws around the overlay
+#   (kept borderless on purpose; the README recommends the same).
+# - the keybindings let the tapes open the plugin without typing a
+#   command into the pane, so the scrollback stays clean.
+onboarding = false
+
+[[keys.command]]
+key = "prefix+["
+type = "shell"
+command = "herdr plugin pane open --plugin copy-search --entrypoint copy"
+
+[[keys.command]]
+key = "prefix+tab"
+type = "shell"
+command = "herdr plugin pane open --plugin copy-search --entrypoint extract"
+
+[ui]
+pane_borders = false

@@ -1,0 +1,84 @@
+# Ghostty Configuration
+# Stored in OneDrive for backup
+
+# Default working directory
+working-directory = ~/Projects
+
+# Theme
+theme = Monokai Pro Spectrum
+background-opacity = 0.95
+background-blur-radius = 20
+
+# Window appearance
+window-theme = dark
+
+# Trying "hidden" — kills the ~28px band that only ever showed the word "herdr",
+# since Herdr draws its own tab row one line below it. Trade-off: no traffic
+# lights (macos-window-buttons has no effect under "hidden") and no top drag
+# strip — option+click the frame to move the window.
+# Revert to this if it feels wrong:
+# macos-titlebar-style = tabs
+macos-titlebar-style = hidden
+
+# Top,bottom. With macos-titlebar-style = hidden the tab row sits on the
+# window's rounded top edge, so the top gutter is breathing room, not dead
+# space. 2 was imperceptible; 8 reads as deliberate and still leaves ~20px
+# net after what the titlebar gave back. Bottom stays at Ghostty's default.
+# NOTE: padding only applies to NEW terminals — cmd+shift+, will not move it.
+window-padding-y = 8,2
+
+# Font
+font-size = 14
+
+# Split pane settings
+unfocused-split-opacity = 0.75
+split-divider-color = #131313
+
+# Cursor
+cursor-style = block
+cursor-style-blink = false
+
+# Mouse
+mouse-hide-while-typing = true
+
+# Clipboard
+clipboard-paste-protection = false
+copy-on-select = clipboard
+
+# --- Keybindings ---
+# Herdr owns all tab / split / navigation chords. Ghostty keeps only what a host must do.
+# Unbound cmd chords fall through to Herdr via the Kitty keyboard protocol, which encodes Super.
+keybind = clear
+
+# Clipboard
+keybind = super+c=copy_to_clipboard:mixed
+keybind = super+v=paste_from_clipboard
+keybind = super+shift+v=paste_from_selection
+
+# Font size
+keybind = super+==increase_font_size:1
+keybind = super++=increase_font_size:1
+keybind = super+-=decrease_font_size:1
+keybind = super+0=reset_font_size
+
+# App
+keybind = super+,=open_config
+keybind = super+shift+,=reload_config
+keybind = super+q=quit
+keybind = super+enter=toggle_fullscreen
+keybind = super+ctrl+f=toggle_fullscreen
+
+# Search — Ghostty's own find bar. `keybind = clear` above had dropped the default.
+# Searches Ghostty's screen and scrollback, so it sees whatever the window is
+# rendering right now; it is not aware of Herdr panes.
+keybind = super+f=start_search
+keybind = super+g=navigate_search:next
+keybind = super+shift+g=navigate_search:previous
+
+# Natural editing — Ghostty sends the byte, Herdr forwards it to the focused pane's shell
+keybind = super+arrow_left=text:\x01
+keybind = super+arrow_right=text:\x05
+keybind = super+backspace=text:\x15
+
+# Window State
+window-save-state = always

@@ -1,0 +1,890 @@
+#!/usr/bin/env python3
+"""Archive interactive Claude Code and Pi sessions as QMD-searchable Markdown.
+
+The harness adapters are intentionally thin. This script owns project-family
+routing, transcript parsing, idempotent file updates, the debounced QMD
+refresh, and the sessions/-scoped auto-commit so Claude Code and Pi produce
+the same archive format.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import glob
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import time
+from typing import Any, Iterable
+
+HOME = Path.home()
+DEFAULT_FAMILIES = {
+    "cribbage": HOME / "Projects" / "cribbage",
+    "jumpstart": HOME / "Projects" / "jumpstart",
+}
+MUTATING_TOOL_NAMES = {
+    "edit",
+    "write",
+    "multiedit",
+    "notebookedit",
+    "functions.edit",
+    "functions.write",
+}
+MAX_REQUESTS = 30
+MAX_REQUEST_CHARS = 800
+MAX_OUTCOME_CHARS = 4_000
+MAX_SUMMARY_CHARS = 1_500
+MAX_FILES = 150
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("claude-hook", help="Read Claude SessionEnd JSON from stdin and detach an archive worker")
+
+    archive = sub.add_parser("archive", help="Archive one transcript")
+    archive.add_argument("--harness", choices=("claude", "pi"), required=True)
+    archive.add_argument("--transcript", required=True)
+    archive.add_argument("--session-id")
+    archive.add_argument("--cwd")
+    archive.add_argument("--no-qmd", action="store_true")
+    archive.add_argument("--no-commit", action="store_true")
+
+    backfill = sub.add_parser("backfill", help="Archive existing supported Claude and Pi sessions")
+    backfill.add_argument("--harness", choices=("claude", "pi", "all"), default="all")
+    backfill.add_argument("--force", action="store_true")
+    backfill.add_argument("--quarantine-stale", action="store_true", help="Rename non-root or obsolete .md records to .stale (requires --force)")
+    backfill.add_argument("--no-qmd", action="store_true")
+    backfill.add_argument("--no-commit", action="store_true")
+
+    sub.add_parser("qmd-refresh", help=argparse.SUPPRESS)
+    return parser.parse_args(argv)
+
+
+def family_roots() -> dict[str, Path]:
+    raw = os.environ.get("AGENT_SESSION_ARCHIVE_FAMILIES")
+    if not raw:
+        return DEFAULT_FAMILIES
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return DEFAULT_FAMILIES
+    if not isinstance(parsed, dict):
+        return DEFAULT_FAMILIES
+    return {str(name): Path(str(root)).expanduser().resolve() for name, root in parsed.items()}
+
+
+def project_family(cwd: str | None) -> tuple[str, Path, str] | None:
+    if not cwd:
+        return None
+    path = Path(cwd).expanduser().resolve()
+    for name, root in family_roots().items():
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        if not relative.parts:
+            return name, root, "workspace"
+        if relative.parts[0] == "sessions":
+            return None
+        checkout = relative.parts[0]
+        if name == "cribbage" and not re.fullmatch(r"(?:cribbage|cb\d+(?:-.+)?)", checkout):
+            continue
+        if name == "jumpstart" and not re.fullmatch(r"(?:jumpstart|js\d+(?:-.+)?)", checkout):
+            continue
+        return name, root, checkout
+    return None
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    entries.append(value)
+    except OSError:
+        return []
+    return entries
+
+
+def text_content(content: Any, *, include_tool_results: bool = False) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    chunks: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "text" and isinstance(block.get("text"), str):
+            chunks.append(block["text"])
+        elif include_tool_results and kind in {"tool_result", "toolResult"}:
+            chunks.append(text_content(block.get("content")))
+    return "\n".join(chunks)
+
+
+def clean_text(value: str, limit: int) -> str:
+    value = re.sub(r"<system-reminder>.*?</system-reminder>", " ", value, flags=re.DOTALL | re.IGNORECASE)
+    value = re.sub(r"<local-command-caveat>.*?</local-command-caveat>", " ", value, flags=re.DOTALL | re.IGNORECASE)
+    value = re.sub(r"<command-(?:name|message|args)>.*?</command-(?:name|message|args)>", " ", value, flags=re.DOTALL | re.IGNORECASE)
+    value = re.sub(r"<task-notification>.*?</task-notification>", " ", value, flags=re.DOTALL | re.IGNORECASE)
+    value = re.sub(r"\bBearer\s+[A-Za-z0-9._~+/=-]{12,}", "Bearer [REDACTED]", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b(?:sk|pk|ghp|github_pat|xox[aboprs])-[-A-Za-z0-9_]{12,}", "[REDACTED_TOKEN]", value)
+    value = re.sub(
+        r"(?im)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]\s*([^\s,;]{8,})",
+        lambda match: f"{match.group(1)}=[REDACTED]",
+        value,
+    )
+    value = value.replace("\x00", "")
+    value = re.sub(r"[ \t]+", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value).strip()
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 1)].rstrip() + "…"
+
+
+def request_line(value: str) -> str:
+    value = clean_text(value, MAX_REQUEST_CHARS)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def request_kind(value: str) -> str:
+    stripped = value.lstrip()
+    if stripped.startswith("This session is being continued from a previous conversation"):
+        return "continuation"
+    if re.match(
+        r"^<(?:command-name|command-message|command-args|task-notification|local-command|ide_|system-reminder)",
+        stripped,
+        flags=re.IGNORECASE,
+    ):
+        return "automation"
+    if stripped in {"[Request interrupted by user]", "[Request interrupted by user for tool use]"}:
+        return "automation"
+    return "request"
+
+
+def add_request(value: str, requests: list[str], summaries: list[str]) -> None:
+    kind = request_kind(value)
+    if kind == "request":
+        requests.append(value)
+    elif kind == "continuation":
+        summaries.append(value)
+
+
+def block_tool_path(block: dict[str, Any]) -> str | None:
+    name = str(block.get("name") or "").lower()
+    if name not in MUTATING_TOOL_NAMES:
+        return None
+    args = block.get("input") if isinstance(block.get("input"), dict) else block.get("arguments")
+    if not isinstance(args, dict):
+        return None
+    path = args.get("path") or args.get("file_path") or args.get("notebook_path")
+    return str(path) if isinstance(path, str) and path else None
+
+
+def iso_timestamp(value: Any) -> str | None:
+    if isinstance(value, (int, float)):
+        return dt.datetime.fromtimestamp(value / 1000, tz=dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def active_pi_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tree_entries = [entry for entry in entries if isinstance(entry.get("id"), str)]
+    if not tree_entries:
+        return entries
+    by_id = {entry["id"]: entry for entry in tree_entries}
+    current: dict[str, Any] | None = tree_entries[-1]
+    branch: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    while current and current.get("id") not in seen:
+        identifier = str(current["id"])
+        seen.add(identifier)
+        branch.append(current)
+        parent_id = current.get("parentId")
+        current = by_id.get(parent_id) if isinstance(parent_id, str) else None
+    branch.reverse()
+    header = next((entry for entry in entries if entry.get("type") == "session"), None)
+    return ([header] if header else []) + branch
+
+
+def parse_pi(entries: list[dict[str, Any]], requested_id: str | None, requested_cwd: str | None) -> dict[str, Any] | None:
+    header = next((entry for entry in entries if entry.get("type") == "session"), {})
+    session_id = requested_id or header.get("id")
+    cwd = requested_cwd or header.get("cwd")
+    if not isinstance(session_id, str) or not isinstance(cwd, str):
+        return None
+
+    active = active_pi_entries(entries)
+    requests: list[str] = []
+    assistant_texts: list[str] = []
+    summaries: list[str] = []
+    files: set[str] = set()
+    name: str | None = None
+    timestamps: list[str] = []
+
+    for entry in active:
+        timestamp = iso_timestamp(entry.get("timestamp"))
+        if timestamp:
+            timestamps.append(timestamp)
+        kind = entry.get("type")
+        if kind == "session_info" and isinstance(entry.get("name"), str):
+            name = entry["name"]
+        elif kind in {"compaction", "branch_summary"} and isinstance(entry.get("summary"), str):
+            summaries.append(entry["summary"])
+        if kind != "message":
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        content = message.get("content")
+        if role == "user":
+            text = text_content(content)
+            if text.strip():
+                add_request(text, requests, summaries)
+        elif role == "assistant":
+            text = text_content(content)
+            if text.strip():
+                assistant_texts.append(text)
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        path = block_tool_path(block)
+                        if path:
+                            files.add(path)
+
+    if name and name.startswith("subagent-"):
+        return None
+    started = iso_timestamp(header.get("timestamp")) or (timestamps[0] if timestamps else None)
+    updated = timestamps[-1] if timestamps else started
+    return {
+        "session_id": session_id,
+        "cwd": cwd,
+        "started": started,
+        "updated": updated,
+        "title": name,
+        "requests": requests,
+        "assistant_texts": assistant_texts,
+        "summaries": summaries,
+        "files": files,
+    }
+
+
+def claude_session_id(entries: list[dict[str, Any]], transcript: Path, requested_id: str | None) -> str | None:
+    if requested_id:
+        return requested_id
+    if re.fullmatch(r"[0-9a-fA-F-]{16,}", transcript.stem):
+        return transcript.stem
+    for entry in entries:
+        value = entry.get("sessionId") or entry.get("session_id")
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def parse_claude(entries: list[dict[str, Any]], transcript: Path, requested_id: str | None, requested_cwd: str | None) -> dict[str, Any] | None:
+    session_id = claude_session_id(entries, transcript, requested_id)
+    if not session_id:
+        return None
+    exact = [
+        entry
+        for entry in entries
+        if (entry.get("sessionId") == session_id or entry.get("session_id") == session_id)
+        and not entry.get("isSidechain")
+    ]
+    # Older standalone transcripts can omit sessionId. Combined agent-team
+    # transcripts cannot: accepting every id-less record there would mix file
+    # deltas from sibling sessions into the root archive.
+    scoped = exact or [
+        entry
+        for entry in entries
+        if entry.get("sessionId") is None and entry.get("session_id") is None and not entry.get("isSidechain")
+    ]
+    message_ids = {
+        entry.get("uuid")
+        for entry in scoped
+        if isinstance(entry.get("uuid"), str)
+    }
+    if exact:
+        scoped.extend(
+            entry
+            for entry in entries
+            if entry.get("type") == "file-history-delta"
+            and entry.get("messageId") in message_ids
+            and entry not in scoped
+        )
+    if any(entry.get("sessionKind") in {"bg", "subagent"} for entry in scoped):
+        return None
+    cwd = requested_cwd
+    if not cwd:
+        cwd = next((entry.get("cwd") for entry in scoped if isinstance(entry.get("cwd"), str)), None)
+    if not isinstance(cwd, str):
+        return None
+
+    requests: list[str] = []
+    assistant_texts: list[str] = []
+    summaries: list[str] = []
+    files: set[str] = set()
+    title: str | None = None
+    timestamps: list[str] = []
+
+    for entry in scoped:
+        timestamp = iso_timestamp(entry.get("timestamp"))
+        if timestamp:
+            timestamps.append(timestamp)
+        kind = entry.get("type")
+        if kind == "ai-title" and isinstance(entry.get("aiTitle"), str):
+            title = entry["aiTitle"]
+        elif kind == "summary" and isinstance(entry.get("summary"), str):
+            summaries.append(entry["summary"])
+        elif kind == "file-history-delta" and isinstance(entry.get("trackingPath"), str):
+            files.add(entry["trackingPath"])
+        if kind not in {"user", "assistant"} or entry.get("isMeta"):
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if kind == "user":
+            text = text_content(content)
+            if text.strip():
+                add_request(text, requests, summaries)
+        else:
+            text = text_content(content)
+            if text.strip():
+                assistant_texts.append(text)
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        path = block_tool_path(block)
+                        if path:
+                            files.add(path)
+
+    started = timestamps[0] if timestamps else None
+    updated = timestamps[-1] if timestamps else started
+    return {
+        "session_id": session_id,
+        "cwd": cwd,
+        "started": started,
+        "updated": updated,
+        "title": title,
+        "requests": requests,
+        "assistant_texts": assistant_texts,
+        "summaries": summaries,
+        "files": files,
+    }
+
+
+def parse_transcript(harness: str, transcript: Path, session_id: str | None, cwd: str | None) -> dict[str, Any] | None:
+    entries = load_jsonl(transcript)
+    if not entries:
+        return None
+    if harness == "pi":
+        return parse_pi(entries, session_id, cwd)
+    return parse_claude(entries, transcript, session_id, cwd)
+
+
+def title_for(data: dict[str, Any]) -> str:
+    if (
+        isinstance(data.get("title"), str)
+        and data["title"].strip()
+        and request_kind(data["title"]) == "request"
+        and "<command-" not in data["title"].lower()
+    ):
+        return clean_text(request_line(data["title"]), 100)
+    requests = data.get("requests") or []
+    if requests:
+        title = request_line(str(requests[0]))
+        title = re.sub(r"^(?:can|could|would) you\s+", "", title, flags=re.IGNORECASE)
+        return clean_text(title, 100)
+    return "Untitled session"
+
+
+def summary_for(data: dict[str, Any]) -> str:
+    requests = [request_line(str(value)) for value in data.get("requests") or [] if str(value).strip()]
+    outcomes = [clean_text(str(value), MAX_OUTCOME_CHARS) for value in data.get("assistant_texts") or [] if str(value).strip()]
+    summaries = [clean_text(str(value), MAX_SUMMARY_CHARS) for value in data.get("summaries") or [] if str(value).strip()]
+
+    request = requests[-1] if requests else "No user request was captured."
+    outcome = outcomes[-1] if outcomes else (summaries[-1] if summaries else "No final assistant response was captured.")
+    if len(outcome) < 100 and summaries:
+        outcome = summaries[-1] + "\n\n" + outcome
+    return clean_text(f"Request: {request}\n\nOutcome: {outcome}", MAX_SUMMARY_CHARS)
+
+
+def git_metadata(cwd: str) -> tuple[str | None, str | None]:
+    try:
+        branch = subprocess.run(
+            ["git", "-C", cwd, "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        ).stdout.strip()
+        head = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--short=12", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None, None
+    return branch or None, head or None
+
+
+def parse_date(value: str | None) -> dt.datetime:
+    if value:
+        try:
+            return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return dt.datetime.now(tz=dt.timezone.utc)
+
+
+def slug(value: str) -> str:
+    result = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return (result[:48].rstrip("-") or "untitled")
+
+
+def yaml_string(value: Any) -> str:
+    return json.dumps("" if value is None else str(value), ensure_ascii=False)
+
+
+def relative_file(path: str, cwd: str) -> str:
+    expanded = Path(path).expanduser()
+    if not expanded.is_absolute():
+        return path
+    try:
+        return str(expanded.resolve().relative_to(Path(cwd).resolve()))
+    except ValueError:
+        return str(expanded)
+
+
+def archive_path(root: Path, harness: str, data: dict[str, Any], title: str) -> Path:
+    started = parse_date(data.get("started"))
+    month = root / "sessions" / started.strftime("%Y-%m")
+    month.mkdir(parents=True, exist_ok=True)
+    session_id = str(data["session_id"])
+    short_id = re.sub(r"[^A-Za-z0-9]", "", session_id)[:12]
+    filename = f"{started.strftime('%Y-%m-%d-%H%M%S')}-{harness}-{slug(title)}--{short_id}.md"
+    desired = month / filename
+    existing = list((root / "sessions").glob(f"**/*-{harness}-*--{short_id}.md"))
+    if existing:
+        current = existing[0]
+        if current != desired:
+            desired.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(current, desired)
+        return desired
+    return desired
+
+
+def render_markdown(harness: str, transcript: Path, data: dict[str, Any], family: str, checkout: str) -> str:
+    title = title_for(data)
+    branch, head = git_metadata(str(data["cwd"]))
+    if harness == "pi":
+        resume = f"cd {shlex.quote(str(data['cwd']))} && pi --session {shlex.quote(str(data['session_id']))}"
+    else:
+        resume = f"cd {shlex.quote(str(data['cwd']))} && claude --resume {shlex.quote(str(data['session_id']))}"
+
+    requests = [request_line(str(value)) for value in data.get("requests") or [] if str(value).strip()]
+    if len(requests) > MAX_REQUESTS:
+        requests = [requests[0], *requests[-(MAX_REQUESTS - 1) :]]
+    files = sorted({relative_file(str(value), str(data["cwd"])) for value in data.get("files") or []})[:MAX_FILES]
+    outcomes = [clean_text(str(value), MAX_OUTCOME_CHARS) for value in data.get("assistant_texts") or [] if str(value).strip()]
+    outcome = outcomes[-1] if outcomes else "No final assistant response was captured."
+
+    lines = [
+        "---",
+        "type: agent-session",
+        f"session_id: {yaml_string(data['session_id'])}",
+        f"harness: {yaml_string(harness)}",
+        f"project: {yaml_string(family)}",
+        f"checkout: {yaml_string(checkout)}",
+        f"cwd: {yaml_string(data['cwd'])}",
+        f"started: {yaml_string(data.get('started'))}",
+        f"updated: {yaml_string(data.get('updated'))}",
+        f"branch: {yaml_string(branch)}",
+        f"head: {yaml_string(head)}",
+        f"transcript: {yaml_string(str(transcript))}",
+        f"resume: {yaml_string(resume)}",
+        "---",
+        "",
+        f"# {title}",
+        "",
+        "## Summary",
+        "",
+        summary_for(data),
+        "",
+        "## Requests",
+        "",
+    ]
+    lines.extend(f"- {request}" for request in requests)
+    if not requests:
+        lines.append("- No user request was captured.")
+    lines.extend(["", "## Outcome", "", outcome, "", "## Files touched", ""])
+    lines.extend(f"- `{value}`" for value in files)
+    if not files:
+        lines.append("- No direct file mutations were captured.")
+    lines.extend(["", "## Resume", "", "```sh", resume, "```", ""])
+    return "\n".join(lines)
+
+
+def atomic_write(path: Path, content: str) -> None:
+    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+GIT_LOCK_WAIT_SECONDS = 90
+GIT_LOCK_STALE_SECONDS = 600
+
+
+def git_enabled() -> bool:
+    return os.environ.get("AGENT_SESSION_ARCHIVE_NO_GIT") != "1"
+
+
+def run_git(root: Path, arguments: list[str], timeout: int = 30) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def git_lock_path(root: Path) -> Path:
+    name = re.sub(r"[^A-Za-z0-9]+", "-", str(root)).strip("-")
+    path = HOME / ".cache" / f"agent-session-archive-git-{name}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def acquire_git_lock(root: Path) -> Path | None:
+    """Serialise commits across sessions that end at the same moment.
+
+    Five checkouts routinely finish work together; without this they race on
+    .git/index.lock and some archives silently fail to commit.
+    """
+    lock = git_lock_path(root)
+    deadline = time.time() + GIT_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            lock.mkdir()
+        except FileExistsError:
+            if time.time() >= deadline:
+                return None
+            try:
+                if time.time() - lock.stat().st_mtime > GIT_LOCK_STALE_SECONDS:
+                    release_git_lock(lock)
+            except OSError:
+                pass
+            time.sleep(0.5)
+            continue
+        except OSError:
+            return None
+        try:
+            (lock / "pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+        return lock
+
+
+def release_git_lock(lock: Path) -> None:
+    try:
+        (lock / "pid").unlink()
+    except OSError:
+        pass
+    try:
+        lock.rmdir()
+    except OSError:
+        pass
+
+
+def commit_subject(entries: list[tuple[str, str]]) -> str:
+    written = [name for status, name in entries if status != "D"]
+    if len(written) == 1:
+        stem = Path(written[0]).stem
+        stem = re.sub(r"--[0-9a-fA-F]{6,}$", "", stem)
+        stem = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{6}-", "", stem)
+        return f"Session archive: {stem[:60].rstrip('-')}"
+    if written:
+        return f"Session archives: {len(written)} sessions"
+    return f"Session archives: pruned {len(entries)} records"
+
+
+def commit_sessions(root: Path) -> bool:
+    """Commit — and try to push — the session archives under `root`.
+
+    Deliberately scoped to `sessions/`. Other agents keep uncommitted work in
+    CLAUDE.md, project-notes.md and .claude/ at this level, so this uses a
+    partial commit that leaves their staged and unstaged changes untouched.
+    """
+    if not git_enabled() or not (root / ".git").exists() or not (root / "sessions").is_dir():
+        return False
+    lock = acquire_git_lock(root)
+    if lock is None:
+        return False
+    try:
+        if run_git(root, ["add", "-A", "--", "sessions"]) is None:
+            return False
+        staged = run_git(root, ["diff", "--cached", "--name-status", "--", "sessions"])
+        if staged is None or staged.returncode != 0 or not staged.stdout.strip():
+            return False
+        entries: list[tuple[str, str]] = []
+        for line in staged.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                entries.append((parts[0][:1], parts[-1]))
+        if not entries:
+            return False
+        result = run_git(root, ["commit", "--only", "-m", commit_subject(entries), "--", "sessions"], timeout=60)
+        if result is None or result.returncode != 0:
+            return False
+        push_sessions(root)
+        return True
+    finally:
+        release_git_lock(lock)
+
+
+def push_sessions(root: Path) -> None:
+    """Best effort. A failed push leaves the commit local; the weekly dotfiles
+    sync pushes anything still unpushed, so nothing is ever stranded."""
+    remote = run_git(root, ["remote"])
+    if remote is None or "origin" not in remote.stdout.split():
+        return
+    unpushed = run_git(root, ["log", "--branches", "--not", "--remotes", "--oneline"])
+    if unpushed is None or not unpushed.stdout.strip():
+        return
+    run_git(root, ["push", "--quiet", "origin", "HEAD"], timeout=120)
+
+
+def archive_one(harness: str, transcript_value: str, session_id: str | None, cwd: str | None, *, schedule_qmd: bool, commit: bool = True) -> Path | None:
+    transcript = Path(transcript_value).expanduser().resolve()
+    if not transcript.is_file():
+        return None
+    data = parse_transcript(harness, transcript, session_id, cwd)
+    if not data:
+        return None
+    # Assistant chatter alone is not a session worth archiving. Autonomous loops,
+    # watcher turns and bare slash commands end with assistant text but no human
+    # request and no edits; accepting `assistant_texts` here landed them as
+    # "Untitled session" records with "No user request was captured" and nothing
+    # for QMD to retrieve on. Require a real request, a continuation summary, or
+    # actual file mutations.
+    if not (data.get("requests") or data.get("summaries") or data.get("files")):
+        return None
+    family_match = project_family(str(data.get("cwd")))
+    if not family_match:
+        return None
+    family, root, checkout = family_match
+    title = title_for(data)
+    output = archive_path(root, harness, data, title)
+    atomic_write(output, render_markdown(harness, transcript, data, family, checkout))
+    if schedule_qmd:
+        schedule_qmd_refresh()
+    if commit:
+        commit_sessions(root)
+    return output
+
+
+def detached_process(arguments: list[str]) -> None:
+    try:
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), *arguments],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError:
+        pass
+
+
+def claude_hook() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        return 0
+    transcript = payload.get("transcript_path")
+    if not isinstance(transcript, str) or not transcript:
+        return 0
+    arguments = ["archive", "--harness", "claude", "--transcript", transcript]
+    session_id = payload.get("session_id")
+    cwd = payload.get("cwd")
+    if isinstance(session_id, str) and session_id:
+        arguments.extend(["--session-id", session_id])
+    if isinstance(cwd, str) and cwd:
+        arguments.extend(["--cwd", cwd])
+    detached_process(arguments)
+    return 0
+
+
+def qmd_lock_path() -> Path:
+    path = HOME / ".cache" / "agent-session-archive-qmd.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def schedule_qmd_refresh() -> None:
+    if os.environ.get("AGENT_SESSION_ARCHIVE_NO_QMD") == "1":
+        return
+    lock_path = qmd_lock_path()
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.write(descriptor, str(os.getpid()).encode())
+        os.close(descriptor)
+    except FileExistsError:
+        try:
+            if time.time() - lock_path.stat().st_mtime > 1_200:
+                lock_path.unlink()
+                schedule_qmd_refresh()
+        except OSError:
+            pass
+        return
+    detached_process(["qmd-refresh"])
+
+
+def qmd_refresh() -> int:
+    lock_path = qmd_lock_path()
+    sync_lock = HOME / ".cache" / "qmd-sync.lock"
+    owns_sync_lock = False
+    try:
+        time.sleep(3)
+        for _ in range(150):
+            try:
+                sync_lock.mkdir()
+                (sync_lock / "pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
+                owns_sync_lock = True
+                break
+            except FileExistsError:
+                time.sleep(0.2)
+        if not owns_sync_lock:
+            return 0
+        for command, timeout in ((["qmd", "update"], 300), (["qmd", "embed"], 900)):
+            subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        if owns_sync_lock:
+            try:
+                (sync_lock / "pid").unlink()
+                sync_lock.rmdir()
+            except OSError:
+                pass
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+    return 0
+
+
+def discover_transcripts(harness: str) -> Iterable[tuple[str, Path, str | None, str | None]]:
+    if harness in {"all", "pi"}:
+        for value in glob.iglob(str(HOME / ".pi" / "agent" / "sessions" / "**" / "*.jsonl"), recursive=True):
+            yield "pi", Path(value), None, None
+    if harness in {"all", "claude"}:
+        for value in glob.iglob(str(HOME / ".claude" / "projects" / "**" / "*.jsonl"), recursive=True):
+            path = Path(value)
+            if "subagents" in path.parts:
+                continue
+            session_id = path.stem if re.fullmatch(r"[0-9a-fA-F-]{16,}", path.stem) else None
+            yield "claude", path, session_id, None
+
+
+def backfill(harness: str, force: bool, refresh_qmd: bool, quarantine_stale: bool = False, commit: bool = True) -> int:
+    if quarantine_stale and (not force or harness != "all"):
+        raise SystemExit("--quarantine-stale requires --force with --harness all so every valid archive is observed")
+    archived = 0
+    skipped = 0
+    quarantined = 0
+    observed: set[Path] = set()
+    for item_harness, transcript, session_id, cwd in discover_transcripts(harness):
+        if not force:
+            short_id = re.sub(r"[^A-Za-z0-9]", "", session_id or transcript.stem)[:12]
+            existing = []
+            for _, root in family_roots().items():
+                sessions = root / "sessions"
+                if sessions.is_dir():
+                    existing.extend(sessions.glob(f"**/*-{item_harness}-*--{short_id}.md"))
+            if existing and all(path.stat().st_mtime >= transcript.stat().st_mtime for path in existing):
+                skipped += 1
+                continue
+        output = archive_one(item_harness, str(transcript), session_id, cwd, schedule_qmd=False, commit=False)
+        if output:
+            archived += 1
+            observed.add(output.resolve())
+    if quarantine_stale:
+        for _, root in family_roots().items():
+            sessions = root / "sessions"
+            if not sessions.is_dir():
+                continue
+            for path in sessions.glob("**/*.md"):
+                if path.resolve() in observed:
+                    continue
+                os.replace(path, path.with_suffix(".stale"))
+                quarantined += 1
+    print(f"Archived {archived} sessions; skipped {skipped} unchanged sessions; quarantined {quarantined} stale records.")
+    if refresh_qmd and archived:
+        schedule_qmd_refresh()
+    if commit:
+        # One commit per root, not one per session: a backfill can rewrite
+        # hundreds of records at once.
+        for _, root in family_roots().items():
+            commit_sessions(root)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+    if args.command == "claude-hook":
+        return claude_hook()
+    if args.command == "archive":
+        output = archive_one(
+            args.harness,
+            args.transcript,
+            args.session_id,
+            args.cwd,
+            schedule_qmd=not args.no_qmd,
+            commit=not args.no_commit,
+        )
+        if output:
+            print(output)
+        return 0
+    if args.command == "backfill":
+        return backfill(args.harness, args.force, not args.no_qmd, args.quarantine_stale, not args.no_commit)
+    if args.command == "qmd-refresh":
+        return qmd_refresh()
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

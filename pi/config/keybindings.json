@@ -1,0 +1,8 @@
+{
+  "tui.editor.cursorLineStart": ["home", "ctrl+home", "ctrl+a"],
+  "tui.editor.cursorLineEnd": ["end", "ctrl+end", "ctrl+e"],
+  "tui.altScreen.top": "ctrl+shift+home",
+  "tui.altScreen.bottom": "ctrl+shift+end",
+  "tui.altScreen.search": "super+f",
+  "app.message.followUp": "ctrl+s"
+}

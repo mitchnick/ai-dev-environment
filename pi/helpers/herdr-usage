@@ -1,0 +1,227 @@
+#!/bin/bash
+# Publish account-wide Claude and OpenAI subscription usage to one Herdr sidebar block.
+# Run by ~/Library/LaunchAgents/io.mitchnick.herdr-usage.plist every two minutes.
+
+set -u
+
+HERDR=${HERDR_BIN:-$HOME/.local/bin/herdr}
+SOCKET=${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock}
+CLAUDE_CACHE=${CLAUDE_USAGE_CACHE:-$HOME/.claude/usage-cache.json}
+PI_AGENT_DIR=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
+OPENAI_CACHE=${OPENAI_USAGE_CACHE:-$PI_AGENT_DIR/openai-usage-cache.json}
+FETCH_TTL=${USAGE_TTL:-90}
+SCOPED_MODEL=${SCOPED_MODEL:-fable}
+SOURCE=claude-usage
+TOKEN_TTL_MS=3600000
+PIN=${HERDR_USAGE_WORKSPACE:-last}
+
+icon_cal=$(printf '\357\201\263')
+icon_clock=$(printf '\357\200\227')
+# Herdr strips zero-width characters from a token and then trims it, so ASCII
+# spaces guarded by a ZWSP do not survive into the sidebar. U+2800 BRAILLE
+# PATTERN BLANK is printable, not whitespace, and one cell wide, so it survives
+# both passes and still draws as an empty cell.
+pad=$(printf '\342\240\200')
+
+repeat() { local n=$1 out=''; while [ "$n" -gt 0 ]; do out="$out$pad"; n=$((n - 1)); done; printf '%s' "$out"; }
+padr() { printf '%s%s' "$1" "$(repeat $(( $2 - ${#1} )))"; }
+padl() { printf '%s%s' "$(repeat $(( $2 - ${#1} )))" "$1"; }
+
+ALL_TOKENS="ul5 u5lo u5mid u5hi uclk ul7 u7lo u7mid u7hi ucal ulfb ufblo ufbmid ufbhi ulcx ucxlo ucxmid ucxhi uocal"
+
+command -v jq >/dev/null 2>&1 || exit 0
+[ -x "$HERDR" ] || exit 0
+[ -S "$SOCKET" ] || exit 0
+
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+cache_age() {
+  local file=$1
+  if [ -f "$file" ]; then
+    echo $(( $(date +%s) - $(mtime "$file") ))
+  else
+    echo 999999
+  fi
+}
+
+find_pi() {
+  if [ -n "${PI_BIN:-}" ] && [ -x "$PI_BIN" ]; then
+    printf '%s' "$PI_BIN"
+    return
+  fi
+  local candidate
+  candidate=$(ls -t "$HOME"/.nvm/versions/node/*/bin/pi 2>/dev/null | head -1)
+  [ -n "$candidate" ] && [ -x "$candidate" ] && printf '%s' "$candidate"
+}
+
+to_epoch() {
+  local value=$1 base
+  [ -n "$value" ] && [ "$value" != "-" ] || return 1
+  if [[ "$value" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$value"
+    return
+  fi
+  base="${value%%.*}"; base="${base%%+*}"; base="${base%%Z*}"
+  date -j -u -f "%Y-%m-%dT%H:%M:%S" "$base" +%s 2>/dev/null \
+    || date -u -d "$base UTC" +%s 2>/dev/null || return 1
+}
+
+# Reset dates render as 08/26, reset times as 2:19pm — both in local time.
+to_mmdd() {
+  local epoch
+  epoch=$(to_epoch "$1") || return 1
+  date -r "$epoch" +%m/%d 2>/dev/null || date -d "@$epoch" +%m/%d 2>/dev/null
+}
+
+to_hhmm() {
+  local epoch out
+  epoch=$(to_epoch "$1") || return 1
+  out=$(date -r "$epoch" +%I:%M%p 2>/dev/null || date -d "@$epoch" +%I:%M%p 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "${out#0}" | tr 'APM' 'apm'
+}
+
+# Claude OAuth usage.
+if [ "$(cache_age "$CLAUDE_CACHE")" -ge "$FETCH_TTL" ]; then
+  claude_token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+    | jq -r '.claudeAiOauth.accessToken // empty')
+  [ -z "$claude_token" ] && claude_token=$(jq -r '.claudeAiOauth.accessToken // empty' "$HOME/.claude/.credentials.json" 2>/dev/null)
+  if [ -n "$claude_token" ]; then
+    body=$(curl -s --max-time 10 https://api.anthropic.com/api/oauth/usage \
+      -H "Authorization: Bearer $claude_token" \
+      -H "Content-Type: application/json" \
+      -H "anthropic-beta: oauth-2025-04-20")
+    if printf '%s' "$body" | jq -e '.limits' >/dev/null 2>&1; then
+      printf '%s' "$body" > "$CLAUDE_CACHE.tmp.$$" && mv "$CLAUDE_CACHE.tmp.$$" "$CLAUDE_CACHE"
+    fi
+  fi
+fi
+
+# OpenAI Codex/ChatGPT usage. Pi's auth command refreshes OAuth before printing
+# the bearer token. The token stays in this process and never reaches logs.
+if [ "$(cache_age "$OPENAI_CACHE")" -ge "$FETCH_TTL" ]; then
+  PI=$(find_pi)
+  account=$(jq -r '."openai-codex".accountId // empty' "$PI_AGENT_DIR/auth.json" 2>/dev/null)
+  if [ -n "$PI" ] && [ -n "$account" ]; then
+    # LaunchAgents do not inherit nvm's PATH. Pi uses /usr/bin/env node, so make
+    # the Node binary beside Pi visible when refreshing the OAuth token.
+    openai_token=$(PATH="$(dirname "$PI"):$PATH" "$PI" auth print-bearer-token --provider openai-codex --min-expiry 30m 2>/dev/null)
+    if [ -n "$openai_token" ]; then
+      body=$(curl -s --max-time 10 https://chatgpt.com/backend-api/wham/usage \
+        -H "Authorization: Bearer $openai_token" \
+        -H "ChatGPT-Account-Id: $account" \
+        -H "User-Agent: pi-coding-agent")
+      if printf '%s' "$body" | jq -e '.rate_limit' >/dev/null 2>&1; then
+        printf '%s' "$body" > "$OPENAI_CACHE.tmp.$$" && mv "$OPENAI_CACHE.tmp.$$" "$OPENAI_CACHE"
+      fi
+    fi
+  fi
+fi
+
+five=""; week=""; fable=""; five_reset=""; week_reset=""
+if [ -s "$CLAUDE_CACHE" ]; then
+  IFS=$'\t' read -r five week fable five_reset week_reset <<EOF
+$(jq -r --arg m "$SCOPED_MODEL" '
+  [ (.five_hour.utilization // (.limits[]? | select(.kind=="session") | .percent) // "-"),
+    (.seven_day.utilization // (.limits[]? | select(.kind=="weekly_all") | .percent) // "-"),
+    ([ .limits[]?
+       | select(.kind=="weekly_scoped" and (.scope.model.display_name // "" | ascii_downcase | startswith($m)))
+       | .percent ] | first // "-"),
+    (.five_hour.resets_at // (.limits[]? | select(.kind=="session") | .resets_at) // "-"),
+    (.seven_day.resets_at // (.limits[]? | select(.kind=="weekly_all") | .resets_at) // "-")
+  ] | @tsv' "$CLAUDE_CACHE" 2>/dev/null)
+EOF
+fi
+
+codex=""; codex_reset=""
+if [ -s "$OPENAI_CACHE" ]; then
+  IFS=$'\t' read -r codex codex_reset <<EOF
+$(jq -r '
+  [ (.rate_limit.primary_window.used_percent // "-"),
+    (.rate_limit.primary_window.reset_at // "-")
+  ] | @tsv' "$OPENAI_CACHE" 2>/dev/null)
+EOF
+fi
+
+set_args=()
+fill_seen=""
+
+bucket() {
+  local prefix=$1 ltok=$2 label=$3 raw=$4 n slot
+  [[ "$raw" =~ ^[0-9]+([.][0-9]+)?$ ]] || return
+  n=$(printf '%.0f' "$raw" 2>/dev/null) || return
+  if   [ "$n" -ge 80 ]; then slot="${prefix}hi"
+  elif [ "$n" -ge 50 ]; then slot="${prefix}mid"
+  else                       slot="${prefix}lo"
+  fi
+  set_args+=(--token "${slot}=$(padl "${n}%" 4)" --token "${ltok}=${label}")
+  fill_seen="$fill_seen $slot $ltok"
+}
+
+bucket u5  ul5  "$(padr '5h' 6)"     "$five"
+bucket u7  ul7  "$(padr '7d' 6)"     "$week"
+bucket ufb ulfb "$(padr 'fable' 6)"  "$fable"
+bucket ucx ulcx "$(padr 'openai' 6)" "$codex"
+
+# The 5h window resets the same day, so it carries a clock and a time. The 7d
+# and OpenAI windows reset days out, so they carry a calendar and a date.
+if resets=$(to_hhmm "$five_reset" 2>/dev/null); then
+  set_args+=(--token "uclk=${icon_clock} ${resets}")
+  fill_seen="$fill_seen uclk"
+fi
+if resets=$(to_mmdd "$week_reset" 2>/dev/null); then
+  set_args+=(--token "ucal=${icon_cal} ${resets}")
+  fill_seen="$fill_seen ucal"
+fi
+if resets=$(to_mmdd "$codex_reset" 2>/dev/null); then
+  set_args+=(--token "uocal=${icon_cal} ${resets}")
+  fill_seen="$fill_seen uocal"
+fi
+
+for token in $ALL_TOKENS; do
+  case " $fill_seen " in *" $token "*) ;; *) set_args+=(--clear-token "$token") ;; esac
+done
+
+ws=$("$HERDR" workspace list 2>/dev/null) || exit 0
+target=$(printf '%s' "$ws" | jq -r --arg pin "$PIN" '
+  (.result.workspaces | sort_by(.number)) as $w
+  | (if $pin == "last" then ($w | last)
+     elif $pin == "first" then ($w | first)
+     else ($w | map(select((.number|tostring) == $pin or .label == $pin)) | first)
+     end // ($w | last))
+  | .workspace_id // empty' 2>/dev/null)
+[ -n "$target" ] || exit 0
+
+# Herdr accepts at most 16 token mutations per metadata report. Keep one source
+# owner and split larger updates into consecutive reports.
+report_batched() {
+  local workspace=$1 source=$2 ttl=$3
+  shift 3
+  local batch=() count=0
+  while [ "$#" -ge 2 ]; do
+    batch+=("$1" "$2")
+    shift 2
+    count=$((count + 1))
+    if [ "$count" -eq 16 ]; then
+      "$HERDR" workspace report-metadata "$workspace" --source "$source" \
+        "${batch[@]}" --ttl-ms "$ttl" >/dev/null 2>&1 || return 1
+      batch=(); count=0
+    fi
+  done
+  if [ "$count" -gt 0 ]; then
+    "$HERDR" workspace report-metadata "$workspace" --source "$source" \
+      "${batch[@]}" --ttl-ms "$ttl" >/dev/null 2>&1 || return 1
+  fi
+}
+
+clear_args=()
+for token in $ALL_TOKENS; do clear_args+=(--clear-token "$token"); done
+printf '%s' "$ws" \
+  | jq -r --arg target "$target" --argjson names "$(printf '%s' "$ALL_TOKENS" | jq -R 'split(" ")')" '
+      .result.workspaces[]?
+      | select(.workspace_id != $target and ((.tokens // {}) | keys | any(. as $key | $names | index($key))))
+      | .workspace_id' 2>/dev/null \
+  | while read -r stale; do
+      [ -n "$stale" ] && report_batched "$stale" "$SOURCE" "$TOKEN_TTL_MS" "${clear_args[@]}"
+    done
+
+report_batched "$target" "$SOURCE" "$TOKEN_TTL_MS" "${set_args[@]}"
