@@ -1,0 +1,24 @@
+# Sanitized snapshot of local Codex preferences, 2026-09-10.
+# MCP connections, project trust, hook state, and onboarding state are omitted.
+
+model = "gpt-6-astra"
+model_reasoning_effort = "high"
+approvals_reviewer = "user"
+
+[tui]
+whimsy = false
+theme = "claude-nerd"
+status_line = ["project-name", "git-branch", "context-used", "model", "reasoning"]
+terminal_title = ["spinner", "thread-title", "project"]
+
+[tui.keymap.global]
+open_transcript = ["ctrl-o", "ctrl-t"]
+open_external_editor = ["ctrl-g"]
+copy = ["alt-c"]
+
+[features]
+# Records the local preference; hook definitions are excluded from this repo.
+hooks = true
+
+[notice]
+hide_rate_limit_model_nudge = true

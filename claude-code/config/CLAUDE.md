@@ -39,6 +39,22 @@ Agent(
 )
 ```
 
+## Web search
+
+The built-in `WebSearch` tool is denied. Web search goes through Keenable's API via the `keenable` CLI:
+
+```bash
+keenable search "the query"                  # realtime, 10 results
+keenable search "the query" --mode pro --max 15   # deeper, slower, costs more
+keenable fetch <url> --prompt "what to pull out"  # server-side extraction of one page
+```
+
+Add `--json` to either for the raw response. The key lives at `~/.config/keenable/env` (mode 600) and resolves as `KEENABLE_API_KEY` → that file → direnv. It works in every project, with no direnv and no specific project checkout. Never pass it on the command line.
+
+Use `keenable fetch` when you need real page text and `WebFetch` was blocked or returned a summary. `/research` is unaffected: its runner calls Keenable and five other providers directly.
+
+Source: `~/.local/bin/keenable`.
+
 ## Deep research
 
 When I ask for "deep research" / a "research report" / to "deeply research" something:
@@ -50,3 +66,13 @@ When I ask for "deep research" / a "research report" / to "deeply research" some
    - In Pi, use `subagent` orchestration with explicit cheaper models for search, fetch, and evidence gathering; reserve the strongest model for final synthesis and verification. Do not launch every child on the parent model.
 3. **Keep the same architecture:** Scope → Search → Fetch → Verify → Synthesize.
 4. To adjust Claude Code's cost/quality dial, edit the `MODEL_*` constants at the top of `deep-research-lean.js`.
+
+## Tech preferences
+
+Defaults for new projects. A project's own `CLAUDE.md` may override.
+
+- **Rails backend** with **Postgres**
+- **Tailwind** for styling
+- **React** only when a full SPA is warranted; otherwise **Hotwire Turbo + Stimulus**
+- **No TypeScript** — vanilla JS
+- **Prettier**: `{"semi": false, "useTabs": true, "singleQuote": true}`

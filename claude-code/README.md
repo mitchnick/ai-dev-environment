@@ -4,7 +4,7 @@
 
 - `config/settings.json` — preferences and permissions; hooks and MCPs removed
 - `config/keybindings.json` — custom keybindings
-- `config/CLAUDE.md` — global instructions shared with Pi
+- `config/CLAUDE.md` — global instructions shared with Pi and Codex
 - `config/aliases.sh` — `cc` alias
 
 ## Custom builds

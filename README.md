@@ -5,6 +5,7 @@ Public, sanitized configuration for an AI coding setup on macOS.
 | Folder | Contents |
 |---|---|
 | [`claude-code/`](claude-code/) | Preferences, global instructions, keybindings, aliases, statusline, workflow, plugins |
+| [`codex/`](codex/) | Model and reasoning preferences, terminal display, keybindings, theme, shared global instructions |
 | [`pi/`](pi/) | Preferences, keybindings, theme, custom extensions, helpers, npm extensions |
 | [`herdr/`](herdr/) | Preferences, keybindings, custom plugins, helpers, patch, external plugin |
 | [`ghostty/`](ghostty/) | Preferences, keybindings, aliases, split helpers |

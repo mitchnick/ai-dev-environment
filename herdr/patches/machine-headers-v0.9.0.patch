@@ -1,0 +1,94 @@
+diff --git a/src/client/shell/endpoint_sidebar.rs b/src/client/shell/endpoint_sidebar.rs
+index 51c940c..0c9bb26 100644
+--- a/src/client/shell/endpoint_sidebar.rs
++++ b/src/client/shell/endpoint_sidebar.rs
+@@ -292,14 +292,8 @@ pub(super) fn render_expanded(
+                 }
+                 let rect = Rect::new(body.x, y, content_width, height);
+-                let nested = Rect::new(
+-                    rect.x.saturating_add(2),
+-                    rect.y,
+-                    rect.width.saturating_sub(2),
+-                    rect.height,
+-                );
+                 let endpoint_active = &endpoint.endpoint_id == state.active_endpoint_id;
+                 super::sidebar::render_workspace_rows(
+                     buffer,
+-                    nested,
++                    rect,
+                     workspace,
+                     workspace.agent_status,
+@@ -416,7 +410,10 @@ fn render_endpoint_row(
+     palette: &Palette,
+ ) {
+-    if highlighted {
+-        buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+-    }
++    let background = if highlighted {
++        palette.active_row_bg
++    } else {
++        palette.surface1
++    };
++    buffer.set_style(rect, Style::default().bg(background));
+     let (glyph, state, color) = endpoint_status_presentation(endpoint.status, palette);
+     let state = if endpoint.status == ClientEndpointStatus::Online {
+@@ -438,5 +435,5 @@ fn render_endpoint_row(
+         rect.y,
+         rect.width.saturating_sub(signal_width.saturating_add(1)),
+-        &format!(" {marker} {}", endpoint.label),
++        &format!("{marker} {}", endpoint.label),
+         Style::default()
+             .fg(
+@@ -444,9 +441,17 @@ fn render_endpoint_row(
+                     palette.overlay0
+                 } else {
+-                    palette.text
++                    palette.subtext0
+                 },
+             )
+             .add_modifier(Modifier::BOLD),
+     );
++    put_text(
++        buffer,
++        rect.x,
++        rect.y,
++        rect.width.min(1),
++        marker,
++        Style::default().fg(palette.overlay1),
++    );
+     put_right_text(buffer, rect, rect.y, &signal, Style::default().fg(color));
+ }
+diff --git a/src/client/shell/tests/endpoints.rs b/src/client/shell/tests/endpoints.rs
+index 52c7192..aa1af25 100644
+--- a/src/client/shell/tests/endpoints.rs
++++ b/src/client/shell/tests/endpoints.rs
+@@ -257,5 +257,5 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
+ 
+ #[test]
+-fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
++fn machine_headers_separate_unindented_workspaces_and_highlight_when_collapsed() {
+     let (mut state, endpoint_id) = state_with_remote();
+     assert!(state.activate_endpoint_projection(&endpoint_id));
+@@ -280,10 +280,19 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
+         .rect;
+     let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
+-    assert_ne!(
++    assert_eq!(
+         buffer[(machine.x, machine.y)].bg,
+-        state.config.palette.active_row_bg
++        state.config.palette.surface1
++    );
++    assert_eq!(buffer[(machine.x, machine.y)].symbol(), "▾");
++    assert_eq!(
++        buffer[(machine.x, machine.y)].fg,
++        state.config.palette.overlay1
++    );
++    assert_eq!(
++        buffer[(machine.x + 2, machine.y)].fg,
++        state.config.palette.subtext0
+     );
+     assert_eq!(
+-        buffer[(workspace.x + 2, workspace.y)].bg,
++        buffer[(workspace.x, workspace.y)].bg,
+         state.config.palette.active_row_bg
+     );

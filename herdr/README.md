@@ -9,11 +9,26 @@ Needs input gets one ding and desktop popup. Finished work stays in the sidebar,
 - [`lib/herdr-arrange/`](lib/herdr-arrange/README.md) — arranger library, unit tests, and optional isolated integration tests
 - [`extensions/custom/herdr-attention/`](extensions/custom/herdr-attention/README.md) — blocked-only notification plugin and tests
 - [`agent-detection/`](agent-detection/README.md) — Claude screen spinner override and synthetic regression checks
-- `patches/` — native search/scrollback patch
+- `patches/` — native search/scrollback patch and optional [machine header styling](patches/machine-headers-v0.9.0.md)
 - `shortcuts/` — shared Cmd+E / Cmd+Shift+E model and effort shortcuts, and the
   router that dispatches them per agent. See [`shortcuts/README.md`](shortcuts/README.md)
 
 ## Custom builds
+
+The optional [machine header patch](patches/machine-headers-v0.9.0.md) targets
+Herdr 0.9.0 at upstream commit `b99002ac99b09e00b4ca692436cb15a6b0d676f1`.
+Expanded headers use `palette.surface1` (charcoal `#363537`), bold
+`palette.subtext0` labels (`#bab6c0`), and `palette.overlay1` disclosure arrows
+(`#8b888f`) in the supplied Monokai Pro Spectrum theme. Active collapsed machines
+retain `active_row_bg`. It removes the leading header space and extra workspace
+indent while preserving worktree nesting, connection badges, compact mode, and hit targets.
+
+This is a client source patch requiring Rust 1.96.1, Just, and Zig 0.15.2.
+No config override is needed: the palette already contains these colors.
+Follow the guide to build and install, then use the sidebar **menu → detach**
+and run `~/.local/bin/herdr` to reattach. The prefix detach shortcut did not work
+in the verified setup. No server restart or remote-machine installation is needed.
+Review and rebase the patch after updates.
 
 - `extensions/custom/herdr-copy-search/`
 - `extensions/custom/herdr-pane-mover/`
