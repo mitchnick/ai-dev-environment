@@ -1,5 +1,5 @@
 # Herdr Configuration
-# Stored in OneDrive for backup, symlinked to ~/.config/herdr/config.toml
+# Install helpers and enable herdr-attention before applying this config; see ../README.md.
 # Tuned to match Ghostty (Monokai Pro Spectrum, 0.95 opacity, 20px blur)
 
 [theme]
@@ -51,22 +51,27 @@ previous_workspace = ["cmd+alt+up",     "prefix+up"]
 next_workspace     = ["cmd+alt+down",   "prefix+down"]
 new_workspace      = ["cmd+n",          "prefix+shift+n"]
 close_workspace    = ["cmd+shift+w",    "prefix+shift+d"]
-workspace_picker   = ["cmd+shift+p",    "prefix+w"]
+workspace_picker   = "prefix+w"
 goto               = ["cmd+g",          "prefix+g"]
 
 # --- Agents ---
-previous_agent = ["cmd+alt+shift+up",   "cmd+shift+up",   "prefix+shift+up"]
-next_agent     = ["cmd+alt+shift+down", "cmd+shift+down", "prefix+shift+down"]
+previous_agent = ["cmd+alt+shift+up",   "prefix+shift+up"]
+next_agent     = ["cmd+alt+shift+down", "prefix+shift+down"]
 
 # --- Tabs ---
 switch_tab   = ["cmd+1..9",      "prefix+1..9"]
-previous_tab = ["cmd+alt+left",  "cmd+shift+left",  "prefix+p", "prefix+left"]
-next_tab     = ["cmd+alt+right", "cmd+shift+right", "prefix+n", "prefix+right"]
+previous_tab = ["cmd+alt+left",  "prefix+p", "prefix+left"]
+next_tab     = ["cmd+alt+right", "prefix+n", "prefix+right"]
 new_tab      = ["cmd+t",         "prefix+c"]
 close_tab    = ["cmd+alt+w",     "prefix+shift+x"]
 rename_tab   = ["cmd+shift+t",   "prefix+shift+t"]
 
 # --- Panes ---
+rename_pane         = ["cmd+shift+p",     "prefix+shift+p"]
+swap_pane_left      = ["cmd+shift+left",  "prefix+shift+h"]
+swap_pane_right     = ["cmd+shift+right", "prefix+shift+l"]
+swap_pane_up        = ["cmd+shift+up",    "prefix+shift+k"]
+swap_pane_down      = ["cmd+shift+down",  "prefix+shift+j"]
 # split_vertical is the side-by-side one. Swap these two lines if cmd+d splits downward.
 split_vertical      = ["cmd+d",           "prefix+v", "prefix+d"]
 split_horizontal    = ["cmd+shift+d",     "prefix+minus"]
@@ -75,7 +80,7 @@ zoom                = ["cmd+shift+enter", "prefix+z"]
 cycle_pane_next     = ["cmd+]",           "prefix+tab"]
 cycle_pane_previous = ["cmd+[",           "prefix+shift+tab"]
 toggle_sidebar      = ["cmd+b",           "prefix+b"]
-resize_mode         = ["cmd+ctrl+r",      "prefix+r"]
+resize_mode         = "prefix+r" # Cmd+Ctrl+R now arranges the laptop layout below.
 copy_mode           = "prefix+["
 
 # Defaults left alone: prefix+h/j/k/l focus a pane, prefix+e edits scrollback,
@@ -118,6 +123,20 @@ key = "prefix+shift+m"
 type = "plugin_action"
 command = "osamahbeig.pane-mover.open"
 description = "pane move menu (re-split, swap, new tab)"
+
+# Arrange existing panes: wide uses up to four columns; laptop uses up to two.
+# Install helpers/herdr-arrange and lib/herdr-arrange before enabling these keys.
+[[keys.command]]
+key = "cmd+shift+r"
+type = "shell"
+command = "~/.local/bin/herdr-arrange wide --focused"
+description = "rearrange panes: wide (4 columns)"
+
+[[keys.command]]
+key = "cmd+ctrl+r"
+type = "shell"
+command = "~/.local/bin/herdr-arrange laptop --focused"
+description = "rearrange panes: laptop (2 columns)"
 
 # Reshape the current tab: big pane left, the rest as a 2-row grid on the right.
 [[keys.command]]
@@ -162,8 +181,7 @@ description = "open layout editor"
 # subcommand, so this goes through a script: ~/.local/bin/herdr-move-tab, which
 # resolves the focused tab and no-ops at either end of the bar.
 #
-# Absolute path on purpose. type = "shell" inherits the server's PATH, not an
-# interactive shell's, so ~/.local/bin is not guaranteed to be on it.
+# Home-relative paths avoid depending on ~/.local/bin being in the server PATH.
 #
 # No up/down pair to match cmd+alt+up/down: tab.move takes only an insert_index,
 # with no workspace field, so there is no "throw this tab at the next space".
@@ -207,10 +225,8 @@ description = "move this tab right"
 # focus too, not just the drawn rows — which is why attention is a toggle, not the resting
 # state. `herdr-agent-view off` drops back to agent_panel_sort below.
 #
-# The projection is transient and dies with the server, so
-# ~/Library/LaunchAgents/io.mitchnick.herdr-agent-view.plist re-applies it after a restart.
-#
-# Absolute path on purpose: type = "shell" inherits the server's PATH.
+# The projection is transient. Run herdr-agent-view rest again after a server restart.
+# Home-relative helper paths avoid depending on the server PATH.
 
 [[keys.command]]
 key = "cmd+alt+a"
@@ -223,6 +239,26 @@ key = "prefix+a"
 type = "shell"
 command = "~/.local/bin/herdr-agent-view toggle"
 description = "agents panel: all <-> attention"
+
+# --- Shared effort shortcut ---
+# cmd+shift+e advances reasoning effort in whichever pane was focused when the
+# key was pressed. Herdr exports HERDR_ACTIVE_PANE_ID (captured at the keypress,
+# not re-read later) plus HERDR_BIN_PATH, so the router acts on the right pane
+# even if focus moves while it runs.
+#
+# The router asks Herdr which agent occupies that pane, then dispatches:
+# Claude Code gets an adapter that drives its model picker, while Codex and Pi
+# receive alt+shift+e and cycle effort natively. Ghostty must leave this chord
+# unbound for the native Super chord to reach Herdr at all.
+#
+# Absolute interpreter on purpose: type = "shell" inherits the server's PATH,
+# so a bare `python3` may not resolve. /usr/bin/python3 is the macOS system
+# copy; Homebrew users may prefer /opt/homebrew/bin/python3.
+[[keys.command]]
+key = "cmd+shift+e"
+type = "shell"
+command = "/usr/bin/python3 ~/.config/herdr/shortcuts/cycle-effort.py"
+description = "cycle reasoning effort in the current agent"
 
 [ui]
 # Active pane borders, sidebar highlights, navigate mode — one setting for all three.
@@ -252,33 +288,8 @@ mouse_capture = true
 
 agent_panel_sort = "spaces"
 
-# Account-wide Claude and OpenAI usage lives here instead of in every pane's
-# statusline. ~/.local/bin/herdr-usage pushes it to the LAST space every two
-# minutes, so it draws once at the foot of the spaces list. Empty token rows
-# collapse, so every other space stays two rows.
-#
-# Sidebar token colors are static, so the statusline's <50/<80/else thresholds
-# become three token slots per metric. herdr-usage fills exactly one of each
-# triplet and clears the other two.
-#
-# One metric per row keeps labels and percentages aligned without truncation.
-# Claude contributes 5h, 7d, and Fable. OpenAI contributes its main weekly
-# limit. Each window that has a reset carries it on its own row: the 5h window
-# resets today, so it shows a clock and a time; the 7d and OpenAI windows reset
-# days out, so they show a calendar and a date.
-#
-#   5h       18%   2:19pm
-#   7d      100%   08/26
-#   fable    64%
-#   openai    7%   08/24
-#
-# The columns are made of padding, not layout — Herdr just concatenates tokens.
-# herdr-usage pads every label to 6 and every number to 4 to build the grid.
-#
-# Gray label + colored number needs two tokens, because Herdr styles a whole
-# token or nothing. It also joins tokens with a hardcoded " · " (a fixed string
-# in the binary, no config for it). That dot is the cost of getting the
-# statusline's gray labels back.
+# Custom usage tokens below are optional and remain empty without a provider.
+# No account usage collector or authentication is included in this export.
 [ui.sidebar.agents]
 # Show the generated pane label beneath an agent when that session reports one.
 # Empty metadata rows collapse, so unlabeled sessions stay on one row.
@@ -320,9 +331,14 @@ rows = [
 ]
 
 [ui.toast]
-# Hands notifications to Ghostty, which raises native macOS ones.
-delivery = "terminal"
+# Enable mitchnick.attention first: it supplies needs-input-only desktop alerts.
+# Built-in delivery also alerts on completion.
+delivery = "off"
 delay_seconds = 1
+
+[ui.sound]
+# The attention plugin plays Ping only for a sustained blocked state.
+enabled = false
 
 # [terminal]
 # Ghostty opens new windows at ~/Projects. Herdr defaults to "follow" so a

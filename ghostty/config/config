@@ -1,5 +1,4 @@
 # Ghostty Configuration
-# Stored in OneDrive for backup
 
 # Default working directory
 working-directory = ~/Projects
@@ -67,6 +66,12 @@ keybind = super+shift+,=reload_config
 keybind = super+q=quit
 keybind = super+enter=toggle_fullscreen
 keybind = super+ctrl+f=toggle_fullscreen
+
+# Model + effort shortcuts. Cmd+E sends ESC e (Alt+E), which Claude Code, Pi,
+# and a patched Codex all read as "open the model/effort picker". Cmd+Shift+E is
+# deliberately NOT bound here: leaving it unbound lets the native chord reach
+# Herdr, whose router dispatches it per agent (see herdr/config/config.toml).
+keybind = super+e=text:\x1be
 
 # Search — Ghostty's own find bar. `keybind = clear` above had dropped the default.
 # Searches Ghostty's screen and scrollback, so it sees whatever the window is

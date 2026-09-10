@@ -4,5 +4,6 @@
   "tui.altScreen.top": "ctrl+shift+home",
   "tui.altScreen.bottom": "ctrl+shift+end",
   "tui.altScreen.search": "super+f",
-  "app.message.followUp": "ctrl+s"
+  "app.message.followUp": "ctrl+s",
+  "app.thinking.cycle": ["shift+tab", "alt+shift+e", "super+shift+e"]
 }

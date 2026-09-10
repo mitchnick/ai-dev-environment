@@ -1,0 +1,4 @@
+#!/bin/sh
+# The same bin/../lib layout works in this export and under ~/.local.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec "${HERDR_ARRANGE_PYTHON:-/usr/bin/python3}" "$script_dir/../lib/herdr-arrange/arrange.py" "$@"

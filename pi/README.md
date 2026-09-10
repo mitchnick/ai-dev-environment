@@ -19,6 +19,8 @@ Source is in `extensions/custom/`:
 - Image generation
 - Session archive
 - Aliases and clear command
+- Model and effort shortcuts — Pi's half of the shared cross-harness chords
+  (see [`../herdr/shortcuts/`](../herdr/shortcuts/README.md))
 
 Supporting commands are in `helpers/`.
 

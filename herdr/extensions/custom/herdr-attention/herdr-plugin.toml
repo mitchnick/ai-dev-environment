@@ -1,0 +1,10 @@
+id = "mitchnick.attention"
+name = "Needs Input Only"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Ding and show a desktop notification only when an agent needs input."
+platforms = ["macos"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["python3", "notify.py"]

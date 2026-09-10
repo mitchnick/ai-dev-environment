@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# claude-cycle-effort — advance a Claude Code pane one reasoning-effort step.
+#
+# The Claude Code half of the shared Cmd+Shift+E shortcut. It drives Claude
+# Code's own ModelPicker over Herdr. That picker's increaseEffort already
+# wraps, so a single right-arrow gives the whole cycle:
+#
+#   low -> medium -> high -> xhigh -> max -> low
+#
+# (ultracode sits between max and low; it is stepped over unless
+#  --allow-ultracode is given.)
+#
+# Safety contract:
+#   * Never types into the draft; the draft and the model are preserved.
+#   * Sends nothing unless the pane hosts a Claude agent whose current model
+#     exposes an effort level.
+#   * No-ops if any picker or dialog already owns the pane, so it can never
+#     confirm someone else's dialog or accept a model the user navigated to.
+#   * Only confirms after observing the effort actually change; otherwise it
+#     escapes out and leaves the session as it found it.
+#
+# Usage: claude-cycle-effort [--pane <pane_id>] [options]
+#   --pane <id>        Herdr pane id. Defaults to $HERDR_ACTIVE_PANE_ID (set
+#                      by Herdr custom commands), then $HERDR_PANE_ID.
+#   --scope session    Apply to this session only (default; picker key "s").
+#   --scope default    Also persist as the new default (picker key "enter").
+#   --allow-ultracode  Include ultracode in the cycle. Off by default:
+#                      ultracode is xhigh plus dynamic workflows, so it
+#                      changes behaviour and cost, not just depth.
+#   --skip-ultracode   Explicit form of the default.
+#   --timeout <ms>     How long to wait for the picker (default 3000).
+#   --quiet            Suppress stdout.
+#
+# Exit codes:
+#   0  effort advanced
+#   2  not applicable — not a Claude pane, model has no effort, or a picker
+#      or dialog already owns input. Nothing was changed.
+#   3  another cycle is already running for this pane
+#   4  bad arguments, herdr unavailable, or a send failed
+set -uo pipefail
+
+PANE="${HERDR_ACTIVE_PANE_ID:-${HERDR_PANE_ID:-}}"
+SCOPE="session"
+TIMEOUT=3000
+SKIP_ULTRACODE=1
+QUIET=0
+
+LEVELS='low|medium|high|xhigh|max|ultracode'
+# The picker header as the picker renders it: alone on its line, near the
+# bottom of the pane. Prose in the transcript that merely mentions "Select
+# model" does not match, so a session discussing this feature still works.
+PICKER_RE='^[[:space:]]*Select model[[:space:]]*$'
+PICKER_TAIL=30
+# Same pattern for herdr's Rust regex, which needs an explicit multi-line flag.
+PICKER_RE_M='(?m)^[[:space:]]*Select model[[:space:]]*$'
+# Herdr custom commands run detached with a minimal PATH, so prefer the
+# interpreter Herdr advertises before falling back to PATH lookup.
+HERDR_BIN="${HERDR_BIN_PATH:-herdr}"
+ZOOMED_BY_US=0
+PICKER_IS_OURS=0
+
+say() { [ "$QUIET" -eq 1 ] || printf '%s\n' "$*"; }
+
+cleanup() {
+	# Never leave a picker we opened, or a zoom we applied, behind.
+	if [ "$PICKER_IS_OURS" -eq 1 ]; then
+		# Only send keys if the pane still hosts the very session we opened
+		# the picker on. If the agent was replaced, its successor must not
+		# receive a stray escape.
+		local cur cur_rest
+		cur="$(pane_identity)"
+		cur_rest="${cur#*|}"
+		if [ -n "${AGENT_SESSION:-}" ] && [ "${cur%%|*}" = "${AGENT_KIND:-}" ] \
+			&& [ "${cur_rest%%|*}" = "$AGENT_SESSION" ]; then
+			"$HERDR_BIN" pane send-keys "$PANE" escape >/dev/null 2>&1
+			sleep 0.2
+		fi
+		PICKER_IS_OURS=0
+	fi
+	[ "$ZOOMED_BY_US" -eq 1 ] && "$HERDR_BIN" pane zoom "$PANE" --off >/dev/null 2>&1
+	rm -rf "${LOCK:-/nonexistent}" 2>/dev/null
+}
+
+die() { [ "$QUIET" -eq 1 ] || printf '%s\n' "$1" >&2; exit "${2:-4}"; }
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--pane) PANE="${2:-}"; shift 2 ;;
+		--scope) SCOPE="${2:-}"; shift 2 ;;
+		--timeout) TIMEOUT="${2:-}"; shift 2 ;;
+		--skip-ultracode) SKIP_ULTRACODE=1; shift ;;
+		--allow-ultracode) SKIP_ULTRACODE=0; shift ;;
+		--quiet) QUIET=1; shift ;;
+		-h|--help) sed -n '2,32p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
+		*) die "unknown argument: $1" 4 ;;
+	esac
+done
+
+[ -n "$PANE" ] || die "no pane: pass --pane or set HERDR_ACTIVE_PANE_ID" 4
+command -v "$HERDR_BIN" >/dev/null 2>&1 || die "herdr not found (tried '$HERDR_BIN'); set HERDR_BIN_PATH" 4
+case "$SCOPE" in session|default) ;; *) die "--scope must be session or default" 4 ;; esac
+
+pane_text() { "$HERDR_BIN" pane read "$PANE" --source visible --lines 80 2>/dev/null; }
+picker_open() { pane_text | tail -"$PICKER_TAIL" | grep -qaE "$PICKER_RE"; }
+
+# "<agent kind>|<agent session id>|<viewport rows>" for the target pane.
+pane_identity() {
+	"$HERDR_BIN" pane get "$PANE" 2>/dev/null | python3 -c '
+import sys, json
+try:
+    p = json.load(sys.stdin)["result"]["pane"]
+except Exception:
+    sys.exit(1)
+sess = (p.get("agent_session") or {}).get("value", "")
+print("%s|%s|%s" % (p.get("agent", ""), sess, p.get("scroll", {}).get("viewport_rows", 0)))
+' 2>/dev/null
+}
+
+# Effort as shown in the status footer. Rendered only while the picker is
+# closed, and only when the current model supports reasoning effort — which
+# is exactly the gate we want. The draft line is skipped so its text cannot
+# be mistaken for a level.
+footer_level() {
+	# Scan the bottom few separator lines rather than assuming the status line
+	# is last: the permission-mode line below it also carries "·" once it gains
+	# a "· <- N agents" suffix. Keep only a last field that is a real level.
+	pane_text | grep -a '·' | grep -av '^[[:space:]]*❯' | tail -6 \
+		| awk '{print $NF}' | grep -aE "^($LEVELS)$" | tail -1
+}
+
+# Effort as shown inside the open picker. A short pane truncates the picker
+# and drops this row; we zoom to bring it back rather than guessing.
+picker_level() {
+	pane_text | grep -oaE '(Low|Medium|High|xHigh|Max|Ultracode) effort' \
+		| head -1 | sed 's/ effort$//' | tr 'A-Z' 'a-z'
+}
+
+# The ❯ cursor row must also carry the ✔ active marker, proving the cursor
+# still sits on the running model and that confirming cannot switch models.
+cursor_on_active_model() {
+	pane_text | grep -aE '❯[[:space:]]*[0-9]+\.' | head -1 | grep -qa '✔'
+}
+
+# Serialise presses on the same pane. A rapid second press queues behind the
+# first rather than being dropped, so every press advances one step; only a
+# genuine pile-up past the deadline is refused.
+LOCK="${TMPDIR:-/tmp}/claude-cycle-effort.$(printf '%s' "$PANE" | tr -c 'A-Za-z0-9' '_').lock"
+LOCK_WAIT_TICKS="${CLAUDE_CYCLE_EFFORT_LOCK_TICKS:-120}"   # ticks of 0.1s
+lock_tick=0
+until mkdir "$LOCK" 2>/dev/null; do
+	# Reclaim a lock orphaned by a killed run.
+	if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+		rm -rf "$LOCK" 2>/dev/null
+		continue
+	fi
+	lock_tick=$((lock_tick + 1))
+	[ "$lock_tick" -ge "$LOCK_WAIT_TICKS" ] \
+		&& die "cycles are queued more than ${LOCK_WAIT_TICKS}00ms deep for $PANE; dropping this press" 3
+	sleep 0.1
+done
+trap cleanup EXIT
+
+# ---- preflight: decide everything before sending a single key --------------
+
+IDENTITY="$(pane_identity)" || die "cannot read pane $PANE" 4
+[ -n "$IDENTITY" ] || die "cannot read pane $PANE" 4
+AGENT_KIND="${IDENTITY%%|*}"
+REST="${IDENTITY#*|}"
+AGENT_SESSION="${REST%%|*}"
+VIEWPORT_ROWS="${REST##*|}"
+
+[ "$AGENT_KIND" = "claude" ] || die "pane $PANE hosts '${AGENT_KIND:-no agent}', not claude; nothing sent" 2
+
+# A picker or dialog already owning input is a hard no-op: the user may have
+# navigated to another model, and confirming would change it.
+! picker_open || die "a picker already owns $PANE; nothing sent" 2
+
+FROM="$(footer_level)"
+[ -n "$FROM" ] || die "no effort indicator in $PANE (model has no effort, or a dialog owns it); nothing sent" 2
+
+# ---- open the picker -------------------------------------------------------
+
+open_picker() {
+	"$HERDR_BIN" pane send-keys "$PANE" alt+e >/dev/null 2>&1 || die "send-keys alt+e failed" 4
+	PICKER_IS_OURS=1
+	"$HERDR_BIN" pane wait-output "$PANE" --regex "$PICKER_RE_M" --source visible --lines 80 \
+		--timeout "$TIMEOUT" >/dev/null 2>&1 \
+		|| die "model picker did not open for $PANE" 2
+}
+
+open_picker
+
+# A short pane truncates the picker and hides the effort row. Zoom so the row
+# renders, because we refuse to confirm a change we cannot observe.
+if [ -z "$(picker_level)" ]; then
+	"$HERDR_BIN" pane send-keys "$PANE" escape >/dev/null 2>&1
+	PICKER_IS_OURS=0
+	sleep 0.3
+	"$HERDR_BIN" pane zoom "$PANE" --on >/dev/null 2>&1 && ZOOMED_BY_US=1
+	sleep 0.4
+	open_picker
+	[ -n "$(picker_level)" ] \
+		|| die "effort row never rendered in $PANE (viewport ${VIEWPORT_ROWS} rows); nothing changed" 2
+fi
+
+cursor_on_active_model \
+	|| die "picker cursor is not on the active model in $PANE; nothing changed" 2
+
+BEFORE="$(picker_level)"
+[ -n "$BEFORE" ] || die "cannot read current effort in $PANE; nothing changed" 2
+
+# ---- advance, and only then confirm ---------------------------------------
+
+"$HERDR_BIN" pane send-keys "$PANE" right >/dev/null 2>&1 || die "send-keys right failed" 4
+
+AFTER=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	sleep 0.12
+	AFTER="$(picker_level)"
+	[ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ] && break
+done
+[ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ] \
+	|| die "effort did not change in $PANE; not confirming" 2
+
+if [ "$SKIP_ULTRACODE" -eq 1 ] && [ "$AFTER" = "ultracode" ]; then
+	PREV="$AFTER"
+	"$HERDR_BIN" pane send-keys "$PANE" right >/dev/null 2>&1
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		sleep 0.12
+		AFTER="$(picker_level)"
+		[ -n "$AFTER" ] && [ "$AFTER" != "$PREV" ] && break
+	done
+	[ -n "$AFTER" ] && [ "$AFTER" != "$PREV" ] || die "could not step past ultracode; not confirming" 2
+fi
+
+# The pane must still host the same agent session we inspected in preflight.
+# Compare kind and session id only — zooming legitimately changes the rows.
+NOW="$(pane_identity)"
+NOW_REST="${NOW#*|}"
+[ "${NOW%%|*}" = "$AGENT_KIND" ] && [ "${NOW_REST%%|*}" = "$AGENT_SESSION" ] \
+	|| die "pane $PANE changed agent mid-cycle; not confirming" 2
+
+cursor_on_active_model || die "picker cursor moved off the active model; not confirming" 2
+
+case "$SCOPE" in session) ACCEPT=s ;; default) ACCEPT=enter ;; esac
+"$HERDR_BIN" pane send-keys "$PANE" "$ACCEPT" >/dev/null 2>&1 || die "send-keys $ACCEPT failed" 4
+
+CLOSED=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	sleep 0.12
+	picker_open || { CLOSED=1; break; }
+done
+if [ "$CLOSED" -eq 1 ]; then
+	PICKER_IS_OURS=0
+else
+	die "picker did not close for $PANE" 2
+fi
+
+# The picker is authoritative. The footer collapses ultracode to "xhigh",
+# so it is only a health check that the session came back up.
+[ -n "$(footer_level)" ] || say "warning: no effort shown in the footer after the change"
+
+say "effort: $BEFORE -> $AFTER ($SCOPE, $PANE)"
