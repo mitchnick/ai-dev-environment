@@ -1,0 +1,266 @@
+diff --git a/codex-rs/tui/src/chatwidget/reasoning_shortcuts.rs b/codex-rs/tui/src/chatwidget/reasoning_shortcuts.rs
+index 7ef88ac..9e156bc 100644
+--- a/codex-rs/tui/src/chatwidget/reasoning_shortcuts.rs
++++ b/codex-rs/tui/src/chatwidget/reasoning_shortcuts.rs
+@@ -12,15 +12,20 @@
+ //! advertised effort when the default is absent, before stepping through the
+ //! advertised order. Raising never silently crosses into Max or Ultra; those
+ //! efforts require the explicit advanced-reasoning picker.
++//! The local Alt+Shift+E / Super+Shift+E cycle explicitly includes all advertised
++//! efforts, including Max and Ultra, and wraps back to the first choice.
+ 
+ use codex_protocol::config_types::ModeKind;
+ use codex_protocol::openai_models::ModelPreset;
+ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
++use crossterm::event::KeyCode;
+ use crossterm::event::KeyEvent;
++use crossterm::event::KeyModifiers;
+ 
+ use super::ChatWidget;
+ use super::PARENT_OWNED_INPUT_MESSAGE;
+ use crate::app_event::AppEvent;
++use crate::key_hint::KeyBinding;
+ use crate::key_hint::KeyBindingListExt;
+ 
+ /// Direction requested by a reasoning-level shortcut.
+@@ -28,6 +33,7 @@ use crate::key_hint::KeyBindingListExt;
+ pub(super) enum ReasoningShortcutDirection {
+     Lower,
+     Raise,
++    Cycle,
+ }
+ 
+ impl ReasoningShortcutDirection {
+@@ -36,6 +42,7 @@ impl ReasoningShortcutDirection {
+         match self {
+             Self::Lower => format!("Reasoning is already at the lowest level ({label})."),
+             Self::Raise => format!("Reasoning is already at the highest level ({label})."),
++            Self::Cycle => format!("Reasoning has only one supported level ({label})."),
+         }
+     }
+ }
+@@ -53,7 +60,14 @@ impl ChatWidget {
+     /// persisting them. In Plan mode, shortcuts apply only to the active
+     /// Plan-mode override and skip the global-vs-Plan scope prompt.
+     pub(super) fn handle_reasoning_shortcut(&mut self, key_event: KeyEvent) -> bool {
+-        let direction = if self
++        let direction = if [KeyModifiers::ALT, KeyModifiers::SUPER]
++            .into_iter()
++            .any(|modifier| {
++                KeyBinding::new(KeyCode::Char('e'), modifier | KeyModifiers::SHIFT)
++                    .is_press(key_event)
++            }) {
++            ReasoningShortcutDirection::Cycle
++        } else if self
+             .chat_keymap
+             .decrease_reasoning_effort
+             .is_pressed(key_event)
+@@ -144,19 +158,19 @@ impl ChatWidget {
+             return true;
+         }
+ 
++        let warning = self.ultra_reasoning_concurrency_warning(&next_effort);
+         if self.collaboration_modes_enabled() && self.active_mode_kind() == ModeKind::Plan {
+-            let warning = self.ultra_reasoning_concurrency_warning(&next_effort);
+             self.app_event_tx
+                 .send(AppEvent::UpdatePlanModeReasoningEffort(Some(next_effort)));
+-            if let Some(warning) = warning {
+-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+-                    crate::history_cell::new_warning_event(warning),
+-                )));
+-            }
+         } else {
+             self.app_event_tx
+                 .send(AppEvent::UpdateReasoningEffort(Some(next_effort)));
+         }
++        if let Some(warning) = warning {
++            self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
++                crate::history_cell::new_warning_event(warning),
++            )));
++        }
+ 
+         true
+     }
+@@ -198,6 +212,9 @@ fn next_reasoning_effort(
+                 .and_then(|index| choices.get(index))
+                 .cloned(),
+             ReasoningShortcutDirection::Raise => choices.get(current_index + 1).cloned(),
++            ReasoningShortcutDirection::Cycle => {
++                (choices.len() > 1).then(|| choices[(current_index + 1) % choices.len()].clone())
++            }
+         };
+     }
+ 
+diff --git a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__reasoning_cycle_single_choice.snap b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__reasoning_cycle_single_choice.snap
+new file mode 100644
+index 0000000..3f99090
+--- /dev/null
++++ b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__reasoning_cycle_single_choice.snap
+@@ -0,0 +1,6 @@
++---
++source: tui/src/chatwidget/tests/reasoning_cycle_tests.rs
++assertion_line: 113
++expression: text
++---
++• Reasoning has only one supported level (high).
+diff --git a/codex-rs/tui/src/chatwidget/tests.rs b/codex-rs/tui/src/chatwidget/tests.rs
+index 6fe9ad4..27ad712 100644
+--- a/codex-rs/tui/src/chatwidget/tests.rs
++++ b/codex-rs/tui/src/chatwidget/tests.rs
+@@ -263,6 +263,8 @@ mod plugin_catalog;
+ mod popups_and_settings;
+ #[path = "tests/rate_limit_recovery_tests.rs"]
+ mod rate_limit_recovery_tests;
++#[path = "tests/reasoning_cycle_tests.rs"]
++mod reasoning_cycle;
+ #[path = "tests/replay_render_tests.rs"]
+ mod replay_render_tests;
+ mod review_mode;
+diff --git a/codex-rs/tui/src/chatwidget/tests/reasoning_cycle_tests.rs b/codex-rs/tui/src/chatwidget/tests/reasoning_cycle_tests.rs
+new file mode 100644
+index 0000000..808c7c6
+--- /dev/null
++++ b/codex-rs/tui/src/chatwidget/tests/reasoning_cycle_tests.rs
+@@ -0,0 +1,142 @@
++use super::*;
++use pretty_assertions::assert_eq;
++
++#[tokio::test]
++async fn reasoning_cycle_includes_advanced_levels_wraps_and_preserves_draft() {
++    for key in [
++        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT | KeyModifiers::SHIFT),
++        KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT),
++        KeyEvent::new(
++            KeyCode::Char('e'),
++            KeyModifiers::SUPER | KeyModifiers::SHIFT,
++        ),
++    ] {
++        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
++        chat.thread_id = Some(ThreadId::new());
++        let mut preset = get_available_model(&chat, "gpt-5.4");
++        let levels = vec![
++            ReasoningEffortConfig::Low,
++            ReasoningEffortConfig::Medium,
++            ReasoningEffortConfig::High,
++            ReasoningEffortConfig::XHigh,
++            ReasoningEffortConfig::Max,
++            ReasoningEffortConfig::Ultra,
++        ];
++        preset.supported_reasoning_efforts = levels
++            .iter()
++            .map(|effort| ReasoningEffortPreset {
++                effort: effort.clone(),
++                description: String::new(),
++            })
++            .collect();
++        chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
++        let draft = "keep this draft 🌴\nsecond line";
++        chat.bottom_pane
++            .set_composer_text(draft.into(), Vec::new(), Vec::new());
++        chat.handle_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
++        let cursor = chat.bottom_pane.composer_cursor();
++        let _ = drain_insert_history(&mut rx);
++        for (index, current) in levels.iter().enumerate() {
++            chat.set_reasoning_effort(Some(current.clone()));
++            chat.handle_key_event(key);
++            let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
++            let efforts: Vec<_> = events
++                .iter()
++                .filter_map(|event| match event {
++                    AppEvent::UpdateReasoningEffort(effort) => Some(effort.clone()),
++                    _ => None,
++                })
++                .collect();
++            assert_eq!(
++                efforts,
++                vec![Some(levels[(index + 1) % levels.len()].clone())]
++            );
++            assert!(events.iter().all(|event| !matches!(
++                event,
++                AppEvent::UpdateModel(_)
++                    | AppEvent::PersistModelSelection { .. }
++                    | AppEvent::PersistPlanModeReasoningEffort(_)
++            )));
++            assert_eq!(chat.bottom_pane.composer_text(), draft);
++            assert_eq!(chat.bottom_pane.composer_cursor(), cursor);
++            assert_eq!(chat.current_model(), "gpt-5.4");
++        }
++    }
++}
++
++#[tokio::test]
++async fn reasoning_cycle_respects_modal_and_key_release() {
++    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
++    chat.thread_id = Some(ThreadId::new());
++    chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
++    let mut key = KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT);
++    key.kind = KeyEventKind::Release;
++    chat.handle_key_event(key);
++    chat.open_model_popup();
++    key.kind = KeyEventKind::Press;
++    chat.handle_key_event(key);
++    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
++    assert!(events.iter().all(|event| !matches!(
++        event,
++        AppEvent::UpdateReasoningEffort(_)
++            | AppEvent::UpdateModel(_)
++            | AppEvent::PersistModelSelection { .. }
++    )));
++    assert_eq!(
++        chat.effective_reasoning_effort(),
++        Some(ReasoningEffortConfig::Medium)
++    );
++}
++
++#[tokio::test]
++async fn reasoning_cycle_single_choice_is_noop() {
++    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
++    chat.thread_id = Some(ThreadId::new());
++    let mut preset = get_available_model(&chat, "gpt-5.4");
++    preset.supported_reasoning_efforts = vec![ReasoningEffortPreset {
++        effort: ReasoningEffortConfig::High,
++        description: String::new(),
++    }];
++    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
++    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
++    let _ = drain_insert_history(&mut rx);
++    chat.handle_key_event(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT));
++    let text = drain_insert_history(&mut rx)
++        .into_iter()
++        .flatten()
++        .map(|line| line.to_string())
++        .collect::<Vec<_>>()
++        .join("\n");
++    assert_chatwidget_snapshot!("reasoning_cycle_single_choice", text);
++    assert_eq!(
++        chat.effective_reasoning_effort(),
++        Some(ReasoningEffortConfig::High)
++    );
++}
++
++#[tokio::test]
++async fn reasoning_cycle_in_plan_mode_only_updates_plan_effort() {
++    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
++    chat.thread_id = Some(ThreadId::new());
++    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
++    let plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref()).expect("plan mode");
++    chat.set_collaboration_mask(plan_mask);
++    let _ = drain_insert_history(&mut rx);
++    chat.handle_key_event(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT));
++    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
++    assert_eq!(
++        events
++            .iter()
++            .filter(|event| matches!(event, AppEvent::UpdatePlanModeReasoningEffort(Some(_))))
++            .count(),
++        1
++    );
++    assert!(events.iter().all(|event| !matches!(
++        event,
++        AppEvent::UpdateReasoningEffort(_)
++            | AppEvent::UpdateModel(_)
++            | AppEvent::PersistModelSelection { .. }
++            | AppEvent::PersistPlanModeReasoningEffort(_)
++            | AppEvent::OpenPlanReasoningScopePrompt { .. }
++    )));
++}

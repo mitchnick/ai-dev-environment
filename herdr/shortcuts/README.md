@@ -1,10 +1,10 @@
 # Shared model and effort shortcuts
 
-Two chords that behave the same way in Claude Code, Codex, and Pi:
+Shared chords for Claude Code, Codex, and Pi:
 
 | Chord | Action |
 | --- | --- |
-| `Cmd+E` | Open the model and effort picker |
+| `Cmd+E` | Open the model and effort picker (Codex requires a custom build) |
 | `Cmd+Shift+E` | Advance reasoning effort for the current model, wrapping to its lowest supported level |
 
 Both preserve the draft, the cursor, and the selected model, and both change the
@@ -22,8 +22,10 @@ involved.
 native Super chord reaches Herdr, which runs `cycle-effort.py`. That matters
 because the harnesses do not agree on what the key should do:
 
-- **Codex** and **Pi** cycle effort natively, so the router just forwards
-  `alt+shift+e` to the pane.
+- **Codex** with the [0.154.0 effort patch](../../codex/patches/README.md)
+  and **Pi** cycle effort natively, so the router forwards `alt+shift+e`.
+  Codex includes the model's advertised Max and Ultra levels. Ultra also
+  enables proactive multi-agent behavior.
 - **Claude Code** has no effort-cycling action at all. Its
   `modelPicker:increaseEffort` exists only *inside* the open picker, so a
   forwarded keystroke has nothing to bind to. The router instead calls an
@@ -54,8 +56,8 @@ The config's `command` uses an absolute interpreter on purpose. Adjust
 `/usr/bin/python3` if your Python lives elsewhere; a bare `python3` may not
 resolve under Herdr's minimal `PATH`, and the binding then fails silently.
 
-Requires Python 3 and Herdr 0.9.0 or newer. No daemon, and no restart of any
-running agent.
+Requires Python 3 and Herdr 0.9.0 or newer. Codex must be restarted once after
+installing its native patch. The router needs no daemon or server restart.
 
 ## Per-harness setup
 
@@ -68,12 +70,12 @@ for the picker, plus the `app.thinking.cycle` aliases in
 [`../../pi/config/keybindings.json`](../../pi/config/keybindings.json). Run
 `/reload` in existing sessions.
 
-**Codex** has no plugin surface for this, so it needs a source patch against an
-official release: clone the matching `rust-v<version>` tag, apply the patch,
-build `-p codex-cli` with Cargo, and swap the binary in beside the stock one so
-the original stays runnable. Codex then handles `Cmd+Shift+E`, `Alt+Shift+E`,
-and legacy `ESC E` natively, and the router only forwards the key. The patch
-itself is version-pinned and is not published here.
+**Codex 0.154.0** needs the included [native effort patch](../../codex/patches/README.md).
+Stock Codex's Alt+. action stops before Max/Ultra and cannot wrap. Build and
+install the patch, then exit and resume Codex. Existing stock processes listed
+in the installer's temporary `codex-effort-pending.json` retain the old Alt+.
+route until restarted. `Cmd+E` still requires the separate unpublished model
+picker patch; use `/model`.
 
 ## The Claude Code adapter
 
@@ -110,9 +112,9 @@ no-op, not an error.
 - **Short panes.** Below roughly 30 rows Claude Code truncates its picker and
   drops the effort row. The adapter detects that, zooms the pane, cycles, and
   unzooms — about 2 s extra and a brief visible zoom.
-- **Herdr only.** The adapter drives a Herdr pane; a Claude Code session outside
-  Herdr cannot be cycled this way. Codex and Pi cycle natively and are
-  unaffected.
+- **Herdr only.** The shared `Cmd+Shift+E` chord needs Herdr's router. Outside
+  Herdr, Codex can use its native `Alt+.` / `Alt+,` shortcuts and Pi can use
+  `Shift+Tab`. The Claude adapter needs a Herdr pane.
 - **Session scope.** The level resets when the session ends. Pass
   `--scope default` to persist it as the new default instead.
 - The adapter reads the rendered pane, so a future Claude Code UI change can
