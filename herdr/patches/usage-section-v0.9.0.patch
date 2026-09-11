@@ -1,0 +1,618 @@
+diff --git a/src/client/shell.rs b/src/client/shell.rs
+index 14f4f66..b7c8bf2 100644
+--- a/src/client/shell.rs
++++ b/src/client/shell.rs
+@@ -29,6 +29,7 @@ mod scroll;
+ mod settings;
+ mod state;
+ mod surface_patch;
++mod usage_sidebar;
+ mod worktrees;
+ 
+ pub(in crate::client::shell) use render::sidebar;
+@@ -49,7 +50,7 @@ use super::endpoint::{ClientEndpointId, ClientEndpointStatus, SavedSshEndpoint};
+ use crate::app::state::Palette;
+ use crate::config::{
+     Config, LiveKeybindConfig, SidebarCollapsedModeConfig, SpacesSidebarConfig,
+-    TabBarPositionConfig,
++    TabBarPositionConfig, UsageSidebarConfig,
+ };
+ use crate::protocol::{
+     ClientMessage, ClientMousePosition, ClientPaneInputEvent, ClientShellSnapshot, ClientShellTab,
+diff --git a/src/client/shell/composition.rs b/src/client/shell/composition.rs
+index a80ebb3..8575ec9 100644
+--- a/src/client/shell/composition.rs
++++ b/src/client/shell/composition.rs
+@@ -45,6 +45,7 @@ impl ClientShellState {
+                 active_endpoint_id: &self.active_endpoint_id,
+                 collapsed_endpoints: &self.collapsed_endpoints,
+                 collapsed_groups: &self.collapsed_groups,
++                usage_collapsed: self.usage_collapsed,
+                 workspace_scroll: &mut self.workspace_scroll,
+                 agent_scroll: &mut self.agent_scroll,
+                 tab_scroll: &mut self.tab_scroll,
+@@ -143,6 +144,7 @@ impl ClientShellState {
+                 active_endpoint_id: &self.active_endpoint_id,
+                 collapsed_endpoints: &self.collapsed_endpoints,
+                 collapsed_groups: &self.collapsed_groups,
++                usage_collapsed: self.usage_collapsed,
+                 workspace_scroll: &mut self.workspace_scroll,
+                 agent_scroll: &mut self.agent_scroll,
+                 tab_scroll: &mut self.tab_scroll,
+diff --git a/src/client/shell/config.rs b/src/client/shell/config.rs
+index e8a9b4b..ed70a6b 100644
+--- a/src/client/shell/config.rs
++++ b/src/client/shell/config.rs
+@@ -44,6 +44,7 @@ impl ClientShellState {
+                 .agent_panel_sort_manual
+                 .then_some(self.config.agent_panel_sort),
+             collapsed_groups,
++            usage_collapsed: self.usage_collapsed.then_some(true),
+         };
+         if let Err(error) = preferences::store(path, preferences) {
+             self.endpoint_error = Some(error);
+@@ -105,6 +106,7 @@ impl ClientShellConfig {
+             tab_bar_position: config.ui.tab_bar_position,
+             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
+             spaces: config.ui.sidebar.spaces.clone(),
++            usage: config.ui.sidebar.usage.clone(),
+             agents: config.ui.sidebar.agents.clone(),
+             agent_panel_sort: config.ui.agent_panel_sort,
+             status_indicators: config.ui.status_indicators,
+@@ -307,6 +309,7 @@ impl ClientShellConfig {
+                 self.tab_bar_position = ui.tab_bar_position;
+                 self.hide_tab_bar_when_single_tab = ui.hide_tab_bar_when_single_tab;
+                 self.spaces = ui.sidebar.spaces.clone();
++                self.usage = ui.sidebar.usage.clone();
+                 self.agents = ui.sidebar.agents.clone();
+                 self.agent_panel_sort = ui.agent_panel_sort;
+                 self.status_indicators = ui.status_indicators;
+diff --git a/src/client/shell/endpoint_sidebar.rs b/src/client/shell/endpoint_sidebar.rs
+index 0c9bb26..87ea28c 100644
+--- a/src/client/shell/endpoint_sidebar.rs
++++ b/src/client/shell/endpoint_sidebar.rs
+@@ -202,13 +202,31 @@ pub(super) fn render_expanded(
+             );
+         }
+     }
++    // Usage tokens are reported per machine. Render the local machine's block only, so
++    // one sidebar showing several machines still shows one usage block.
++    let usage_rows = super::usage_sidebar::rows(
++        config,
++        state
++            .endpoints
++            .iter()
++            .find(|endpoint| endpoint.endpoint_id.is_local())
++            .and_then(|endpoint| endpoint.snapshot.as_deref()),
++    );
++    let usage_height = super::usage_sidebar::block_height(
++        &usage_rows,
++        state.usage_collapsed,
++        workspace_area
++            .height
++            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
++    );
+     let body = Rect::new(
+         workspace_area.x,
+         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
+         workspace_area.width,
+         workspace_area
+             .height
+-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
++            .saturating_sub(WORKSPACE_HEADER_ROWS + 1)
++            .saturating_sub(usage_height),
+     );
+     hits.workspace_body = body;
+     let row_heights = rows
+@@ -331,6 +349,20 @@ pub(super) fn render_expanded(
+     }
+ 
+     let footer_y = workspace_area.bottom().saturating_sub(1);
++    // Directly under the last machine's workspaces, not at the foot of the section.
++    super::usage_sidebar::render(
++        buffer,
++        Rect::new(
++            workspace_area.x,
++            y.min(footer_y.saturating_sub(usage_height)),
++            workspace_area.width,
++            usage_height,
++        ),
++        &usage_rows,
++        state.usage_collapsed,
++        config,
++        hits,
++    );
+     if config.mouse_capture {
+         let label = format!(" new · {}", active_endpoint_label(state));
+         hits.new_workspace = Rect::new(
+diff --git a/src/client/shell/mouse.rs b/src/client/shell/mouse.rs
+index cd4a6c1..1ffd9a0 100644
+--- a/src/client/shell/mouse.rs
++++ b/src/client/shell/mouse.rs
+@@ -1972,6 +1972,12 @@ impl ClientShellState {
+                     self.persist_chrome_preferences(outcome);
+                     return;
+                 }
++                if super::contains(self.hits.usage_toggle, point) {
++                    self.usage_collapsed = !self.usage_collapsed;
++                    outcome.repaint = true;
++                    self.persist_chrome_preferences(outcome);
++                    return;
++                }
+                 for hit in &self.hits.workspaces {
+                     if let Some((rect, key)) = &hit.group_toggle {
+                         if super::contains(*rect, point) {
+diff --git a/src/client/shell/preferences.rs b/src/client/shell/preferences.rs
+index f657dfb..d796ae3 100644
+--- a/src/client/shell/preferences.rs
++++ b/src/client/shell/preferences.rs
+@@ -19,6 +19,8 @@ pub(super) struct ClientChromePreferences {
+     pub(super) agent_panel_sort: Option<crate::config::AgentPanelSortConfig>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub(super) collapsed_groups: Vec<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(super) usage_collapsed: Option<bool>,
+ }
+ 
+ pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {
+diff --git a/src/client/shell/render.rs b/src/client/shell/render.rs
+index ad9ac8b..287bd7c 100644
+--- a/src/client/shell/render.rs
++++ b/src/client/shell/render.rs
+@@ -215,6 +215,7 @@ pub(super) struct ShellRenderState<'a> {
+     pub(super) active_endpoint_id: &'a ClientEndpointId,
+     pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
+     pub(super) collapsed_groups: &'a HashSet<String>,
++    pub(super) usage_collapsed: bool,
+     pub(super) workspace_scroll: &'a mut usize,
+     pub(super) agent_scroll: &'a mut usize,
+     pub(super) tab_scroll: &'a mut usize,
+@@ -304,6 +305,7 @@ pub(super) fn render_shell(
+         hits.agent_scrollbar = Rect::default();
+         hits.agent_sort_toggle = Rect::default();
+         hits.new_workspace = Rect::default();
++        hits.usage_toggle = Rect::default();
+         hits.machines.clear();
+         hits.workspaces.clear();
+         hits.agents.clear();
+diff --git a/src/client/shell/sidebar.rs b/src/client/shell/sidebar.rs
+index 0aaa0d5..124d1b6 100644
+--- a/src/client/shell/sidebar.rs
++++ b/src/client/shell/sidebar.rs
+@@ -211,13 +211,22 @@ pub(crate) fn render_sidebar(
+     );
+ 
+     let entries = workspace_entries(snapshot, state.collapsed_groups);
++    let usage_rows = super::usage_sidebar::rows(config, Some(snapshot));
++    let usage_height = super::usage_sidebar::block_height(
++        &usage_rows,
++        state.usage_collapsed,
++        workspace_area
++            .height
++            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
++    );
+     let body = Rect::new(
+         workspace_area.x,
+         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
+         workspace_area.width,
+         workspace_area
+             .height
+-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
++            .saturating_sub(WORKSPACE_HEADER_ROWS + 1)
++            .saturating_sub(usage_height),
+     );
+     hits.workspace_body = body;
+     let row_heights = entries
+@@ -366,6 +375,21 @@ pub(crate) fn render_sidebar(
+     }
+ 
+     let footer_y = workspace_area.bottom().saturating_sub(1);
++    // Directly under the last workspace row, not at the foot of the section. A full
++    // list pushes it down to the footer, where its reserved rows already are.
++    super::usage_sidebar::render(
++        buffer,
++        Rect::new(
++            workspace_area.x,
++            y.min(footer_y.saturating_sub(usage_height)),
++            workspace_area.width,
++            usage_height,
++        ),
++        &usage_rows,
++        state.usage_collapsed,
++        config,
++        hits,
++    );
+     if config.mouse_capture {
+         hits.new_workspace = Rect::new(
+             workspace_area.x,
+diff --git a/src/client/shell/state.rs b/src/client/shell/state.rs
+index 81845d3..13fbcdf 100644
+--- a/src/client/shell/state.rs
++++ b/src/client/shell/state.rs
+@@ -78,6 +78,7 @@ pub(crate) struct ClientShellConfig {
+     pub(super) tab_bar_position: TabBarPositionConfig,
+     pub(super) hide_tab_bar_when_single_tab: bool,
+     pub(super) spaces: SpacesSidebarConfig,
++    pub(super) usage: UsageSidebarConfig,
+     pub(super) agents: crate::config::AgentsSidebarConfig,
+     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
+     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
+@@ -159,6 +160,7 @@ pub(super) struct ShellHitMap {
+     pub(super) sidebar_divider: Rect,
+     pub(super) sidebar_section_divider: Rect,
+     pub(super) sidebar_toggle: Rect,
++    pub(super) usage_toggle: Rect,
+     pub(super) new_workspace: Rect,
+     pub(super) new_tab: Rect,
+     pub(super) tab_scroll_left: Rect,
+@@ -911,6 +913,7 @@ pub(crate) struct ClientShellState {
+     pub(super) workspace_press: Option<ClientWorkspacePress>,
+     pub(super) tab_press: Option<ClientTabPress>,
+     pub(super) collapsed_groups: HashSet<String>,
++    pub(super) usage_collapsed: bool,
+     pub(super) workspace_scroll: usize,
+     pub(super) agent_scroll: usize,
+     pub(super) tab_scroll: usize,
+@@ -1054,6 +1057,7 @@ impl ClientShellState {
+             workspace_press: None,
+             tab_press: None,
+             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
++            usage_collapsed: preferences.usage_collapsed.unwrap_or(false),
+             workspace_scroll: 0,
+             agent_scroll: 0,
+             tab_scroll: 0,
+diff --git a/src/client/shell/tests/endpoints.rs b/src/client/shell/tests/endpoints.rs
+index aa1af25..7f847c7 100644
+--- a/src/client/shell/tests/endpoints.rs
++++ b/src/client/shell/tests/endpoints.rs
+@@ -1212,3 +1212,71 @@ fn navigator_foreign_tab_selection_keeps_the_tab_target() {
+         }] if activated == &endpoint_id && tab_id == "tab_1"
+     ));
+ }
++
++#[test]
++fn usage_section_renders_once_from_local_tokens_and_collapses_on_click() {
++    use crate::config::SpaceSidebarToken;
++
++    let mut config = Config::default();
++    config.ui.sidebar.usage.rows = vec![vec![
++        SpaceSidebarToken::Custom("ul5".into()),
++        SpaceSidebarToken::Custom("u5lo".into()),
++    ]];
++    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
++    let profile = remote_profile();
++    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
++    state.set_endpoint_catalog(&[profile]);
++    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
++
++    let mut local = snapshot();
++    local.workspaces[0].tokens = vec![("ul5".into(), "5h".into()), ("u5lo".into(), "27%".into())];
++    state.set_snapshot(Box::new(local));
++    state.set_pane_surface(surface());
++    let mut remote = snapshot();
++    remote.boot_id = "remote-boot".into();
++    remote.workspaces[0].tokens = vec![("ul5".into(), "5h".into()), ("u5lo".into(), "99%".into())];
++    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
++
++    let frame_text = |state: &mut ClientShellState| {
++        let frame = state.compose(100, 28).expect("combined endpoint frame");
++        frame
++            .cells
++            .chunks(frame.width as usize)
++            .map(|row| {
++                row.iter()
++                    .map(|cell| cell.symbol.as_str())
++                    .collect::<String>()
++            })
++            .collect::<Vec<_>>()
++            .join("\n")
++    };
++
++    let text = frame_text(&mut state);
++    assert_eq!(text.matches("▾ usage").count(), 1, "frame: {text}");
++    assert!(text.contains("5h · 27%"), "frame: {text}");
++    assert!(!text.contains("99%"), "frame: {text}");
++
++    let toggle = state.hits.usage_toggle;
++    assert!(!toggle.is_empty());
++    let last_workspace_bottom = state
++        .hits
++        .workspaces
++        .iter()
++        .map(|hit| hit.rect.bottom())
++        .max()
++        .expect("workspace rows");
++    assert_eq!(
++        toggle.y, last_workspace_bottom,
++        "usage header should sit directly under the last workspace row"
++    );
++    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
++        kind: MouseEventKind::Down(MouseButton::Left),
++        column: toggle.x,
++        row: toggle.y,
++        modifiers: KeyModifiers::empty(),
++    })]);
++    assert!(state.usage_collapsed);
++    let text = frame_text(&mut state);
++    assert_eq!(text.matches("▸ usage").count(), 1, "frame: {text}");
++    assert!(!text.contains("27%"), "frame: {text}");
++}
+diff --git a/src/client/shell/usage_sidebar.rs b/src/client/shell/usage_sidebar.rs
+new file mode 100644
+index 0000000..9621639
+--- /dev/null
++++ b/src/client/shell/usage_sidebar.rs
+@@ -0,0 +1,116 @@
++//! One pinned usage block at the foot of the spaces list.
++//!
++//! Account-wide usage is reported as workspace metadata tokens, so without this it
++//! renders under whichever workspace received it — once per machine in the endpoint
++//! sidebar. The block reads the local machine's tokens only, collapses like a machine
++//! header, and stays put while the workspace list scrolls.
++
++use super::render::put_text;
++use super::*;
++use ratatui::{
++    text::Line,
++    widgets::{Paragraph, Widget},
++};
++
++/// Every usage token the local machine currently reports. `herdr-usage` pins its
++/// tokens to one workspace and clears the rest, so the union is that one block.
++pub(super) fn local_tokens(snapshot: Option<&ClientShellSnapshot>) -> HashMap<String, String> {
++    let mut tokens = HashMap::new();
++    let Some(snapshot) = snapshot else {
++        return tokens;
++    };
++    for workspace in &snapshot.workspaces {
++        for (name, value) in &workspace.tokens {
++            tokens.insert(name.clone(), value.clone());
++        }
++    }
++    tokens
++}
++
++pub(super) fn rows(
++    config: &ClientShellConfig,
++    snapshot: Option<&ClientShellSnapshot>,
++) -> Vec<Vec<crate::ui::ResolvedToken>> {
++    if config.usage.rows.is_empty() {
++        return Vec::new();
++    }
++    crate::ui::sidebar_usage_rows(&config.usage, &local_tokens(snapshot))
++}
++
++/// Header row plus the token rows when expanded, never more than half the section so
++/// a long usage layout cannot squeeze the workspace list out of the sidebar.
++pub(super) fn block_height(
++    rows: &[Vec<crate::ui::ResolvedToken>],
++    collapsed: bool,
++    available: u16,
++) -> u16 {
++    if rows.is_empty() || available < 2 {
++        return 0;
++    }
++    let body = if collapsed {
++        0
++    } else {
++        u16::try_from(rows.len()).unwrap_or(u16::MAX)
++    };
++    body.saturating_add(1).min(available / 2)
++}
++
++pub(super) fn render(
++    buffer: &mut Buffer,
++    area: Rect,
++    rows: &[Vec<crate::ui::ResolvedToken>],
++    collapsed: bool,
++    config: &ClientShellConfig,
++    hits: &mut ShellHitMap,
++) {
++    if area.height == 0 || area.width == 0 {
++        return;
++    }
++    let palette = &config.palette;
++    let header = Rect::new(area.x, area.y, area.width, 1);
++    buffer.set_style(header, Style::default().bg(palette.surface1));
++    let marker = if collapsed { "▸" } else { "▾" };
++    put_text(
++        buffer,
++        header.x,
++        header.y,
++        header.width,
++        &format!("{marker} {}", config.usage.label),
++        Style::default()
++            .fg(palette.subtext0)
++            .add_modifier(Modifier::BOLD),
++    );
++    put_text(
++        buffer,
++        header.x,
++        header.y,
++        header.width.min(1),
++        marker,
++        Style::default().fg(palette.overlay1),
++    );
++    hits.usage_toggle = header;
++    if collapsed {
++        return;
++    }
++    let content_width = area.width.saturating_sub(2);
++    for (index, row) in rows.iter().enumerate() {
++        let y = area.y.saturating_add(1).saturating_add(index as u16);
++        if y >= area.bottom() {
++            break;
++        }
++        let spans = crate::ui::resolved_token_spans(
++            row,
++            ("", Style::default()),
++            Style::default().fg(palette.overlay0),
++            Style::default().fg(palette.subtext0),
++            Style::default().fg(palette.overlay0),
++            Style::default().fg(palette.overlay1),
++            palette,
++            content_width.saturating_sub(1) as usize,
++        );
++        Paragraph::new(Line::from(spans)).render(
++            Rect::new(area.x.saturating_add(1), y, content_width, 1),
++            buffer,
++        );
++    }
++}
+diff --git a/src/config.rs b/src/config.rs
+index 60a22a1..63f853a 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -30,7 +30,7 @@ pub use self::{
+     },
+     sidebar::{
+         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
+-        SpaceSidebarToken, SpacesSidebarConfig,
++        SpaceSidebarToken, SpacesSidebarConfig, UsageSidebarConfig,
+     },
+     sound::SoundConfig,
+     tab_bar::TabBarRightEntryConfig,
+diff --git a/src/config/sidebar.rs b/src/config/sidebar.rs
+index 0b48976..3c2461e 100644
+--- a/src/config/sidebar.rs
++++ b/src/config/sidebar.rs
+@@ -475,11 +475,32 @@ impl Default for SpacesSidebarConfig {
+     }
+ }
+ 
++/// Account-wide usage rows, pinned once at the foot of the spaces list instead of
++/// hanging off whichever workspace last received the tokens. Empty rows disable the
++/// section, so the stock sidebar is unchanged.
++#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
++#[serde(default)]
++pub struct UsageSidebarConfig {
++    pub label: String,
++    #[serde(deserialize_with = "deserialize_sidebar_rows")]
++    pub rows: SpaceSidebarRows,
++}
++
++impl Default for UsageSidebarConfig {
++    fn default() -> Self {
++        Self {
++            label: "usage".to_owned(),
++            rows: Vec::new(),
++        }
++    }
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+ #[serde(default)]
+ pub struct SidebarConfig {
+     pub agents: AgentsSidebarConfig,
+     pub spaces: SpacesSidebarConfig,
++    pub usage: UsageSidebarConfig,
+ }
+ 
+ #[cfg(test)]
+@@ -513,6 +534,25 @@ mod tests {
+         assert_eq!(config.spaces.row_gap, 0);
+     }
+ 
++    #[test]
++    fn usage_section_defaults_to_off_and_parses_custom_token_rows() {
++        assert!(SidebarConfig::default().usage.rows.is_empty());
++        assert_eq!(SidebarConfig::default().usage.label, "usage");
++
++        let config: crate::config::Config = toml::from_str(
++            r##"
++[ui.sidebar.usage]
++label = "usage"
++rows = [[{ token = "$ul5", fg = "#8b888f", dim = true }, { token = "$u5lo", fg = "#7bd88f" }]]
++"##,
++        )
++        .expect("usage sidebar config");
++
++        assert_eq!(config.ui.sidebar.usage.label, "usage");
++        assert_eq!(config.ui.sidebar.usage.rows.len(), 1);
++        assert_eq!(config.ui.sidebar.usage.rows[0].len(), 2);
++    }
++
+     #[test]
+     fn parses_builtin_and_arbitrary_custom_tokens() {
+         let config: crate::config::Config = toml::from_str(
+diff --git a/src/ui.rs b/src/ui.rs
+index 141e09d..cbc9405 100644
+--- a/src/ui.rs
++++ b/src/ui.rs
+@@ -33,8 +33,8 @@ pub(crate) use self::scrollbar::{
+ };
+ pub(crate) use self::sidebar::{
+     agent_panel_entries_from, expanded_sidebar_sections, resolved_token_spans, sidebar_agent_rows,
+-    sidebar_section_divider_rect, sidebar_space_rows, AgentPanelEntry, AgentTokenContext,
+-    ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
++    sidebar_section_divider_rect, sidebar_space_rows, sidebar_usage_rows, AgentPanelEntry,
++    AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
+ };
+ use self::status::copy_feedback_rect;
+ pub(crate) use self::status::{render_config_diagnostic_buffer, render_copy_feedback_buffer};
+diff --git a/src/ui/sidebar.rs b/src/ui/sidebar.rs
+index 178bdb1..7b65b30 100644
+--- a/src/ui/sidebar.rs
++++ b/src/ui/sidebar.rs
+@@ -7,8 +7,9 @@ use ratatui::{
+ };
+ 
+ pub(crate) use self::tokens::{
+-    agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows, AgentTokenContext,
+-    ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
++    agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows,
++    usage_rows as sidebar_usage_rows, AgentTokenContext, ResolvedToken, ResolvedTokenKind,
++    SpaceTokenContext,
+ };
+ use super::text::{display_width, truncate_end};
+ use crate::app::state::Palette;
+diff --git a/src/ui/sidebar/tokens.rs b/src/ui/sidebar/tokens.rs
+index d9cefe9..47f5a21 100644
+--- a/src/ui/sidebar/tokens.rs
++++ b/src/ui/sidebar/tokens.rs
+@@ -1,6 +1,6 @@
+ use crate::config::{
+     AgentSidebarToken, AgentsSidebarConfig, SidebarTokenStyle, SpaceSidebarToken,
+-    SpacesSidebarConfig,
++    SpacesSidebarConfig, UsageSidebarConfig,
+ };
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -177,6 +177,37 @@ pub(crate) fn space_rows(
+         .collect()
+ }
+ 
++/// Usage rows carry only reported tokens, so every built-in space token resolves to
++/// nothing here. Rows whose tokens are all absent collapse, exactly as space rows do.
++pub(crate) fn usage_rows(
++    config: &UsageSidebarConfig,
++    tokens: &std::collections::HashMap<String, String>,
++) -> Vec<Vec<ResolvedToken>> {
++    config
++        .rows
++        .iter()
++        .filter_map(|row| {
++            let resolved = row
++                .iter()
++                .filter_map(|configured| {
++                    let (token, style) = configured.parts();
++                    let kind = match token {
++                        SpaceSidebarToken::Custom(name) => {
++                            tokens.get(name).cloned().map(ResolvedTokenKind::Custom)
++                        }
++                        _ => None,
++                    }?;
++                    let style = kind
++                        .text_value()
++                        .map_or(style, |value| configured.style_for_value(value));
++                    Some(ResolvedToken::new(kind, style))
++                })
++                .collect::<Vec<_>>();
++            (!resolved.is_empty()).then_some(resolved)
++        })
++        .collect()
++}
++
+ pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
+     if matches!(previous.kind, ResolvedTokenKind::StateIcon)
+         || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })

@@ -9,7 +9,7 @@ Needs input gets one ding and desktop popup. Finished work stays in the sidebar,
 - [`lib/herdr-arrange/`](lib/herdr-arrange/README.md) — arranger library, unit tests, and optional isolated integration tests
 - [`extensions/custom/herdr-attention/`](extensions/custom/herdr-attention/README.md) — blocked-only notification plugin and tests
 - [`agent-detection/`](agent-detection/README.md) — Claude screen spinner override and synthetic regression checks
-- `patches/` — native search/scrollback patch and optional [machine header styling](patches/machine-headers-v0.9.0.md)
+- `patches/` — native search/scrollback patch, optional [machine header styling](patches/machine-headers-v0.9.0.md), and a [pinned usage section](patches/usage-section-v0.9.0.md)
 - `shortcuts/` — shared Cmd+E / Cmd+Shift+E model and effort shortcuts, and the
   router that dispatches them per agent. See [`shortcuts/README.md`](shortcuts/README.md)
 
@@ -29,6 +29,36 @@ Follow the guide to build and install, then use the sidebar **menu → detach**
 and run `~/.local/bin/herdr` to reattach. The prefix detach shortcut did not work
 in the verified setup. No server restart or remote-machine installation is needed.
 Review and rebase the patch after updates.
+
+The optional [usage-section patch and installation guide](patches/usage-section-v0.9.0.md)
+applies **on top of the machine-header patch at the same pinned commit**. It adds
+`[ui.sidebar.usage]`: account-wide usage reported as workspace metadata renders
+once, directly under the last workspace row, using only the local machine's
+`$custom` tokens. Its header uses the same `surface1` background, bold `subtext0`
+label, and `overlay1` arrow as a machine header. Clicking collapses the block,
+and the choice persists in client shell preferences. The block stays in place
+while workspaces scroll and uses at most half the spaces body. Empty rows are
+the default and disable it, preserving stock behavior.
+
+Both patches require Rust **1.96.1** (selected by `rust-toolchain.toml`), Just,
+and Zig **0.15.2**. Homebrew's `zig@0.15` is keg-only: set
+`ZIG="$(brew --prefix zig@0.15)/bin/zig"`. Follow the usage guide to apply both
+patches, build, test, and install to a new executable path before pointing
+`~/.local/bin/herdr` at it. Copying over an existing executable can invalidate its
+ad-hoc signature and cause silent macOS SIGKILL; use a new path or delete the old
+custom executable first. Then merge the guide's generic config example and
+move usage rows out of `[ui.sidebar.spaces]` to avoid duplicates. A separate token
+provider is required; the example contains no live configuration.
+
+Install the patched build together with the config change. Stock binaries report
+`unknown config key ui.sidebar.usage; ignoring key`; the key is ignored, not
+fatal. An older running server also reports it when next parsing config, even
+after the launcher is replaced. Loading the client needs only sidebar
+**menu → detach** and relaunch, with no server restart. Clearing the older
+server's diagnostic requires separately moving that process to the patched
+executable. Upstream may add pinned sidebar sections: rebase both patches after
+each Herdr update, or retire the usage patch when upstream can pin a configured
+token block. Compatibility beyond the pinned version is not established.
 
 - `extensions/custom/herdr-copy-search/`
 - `extensions/custom/herdr-pane-mover/`
