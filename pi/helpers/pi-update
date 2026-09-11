@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DOTFILES_DIR="${DOTFILES_DIR:-$HOME/Projects/dotfiles}"
 PI_BIN="${PI_BIN:-$(command -v pi || true)}"
 BUN_BIN="${BUN_BIN:-$(command -v bun || true)}"
-TEST_DIR="$DOTFILES_DIR/pi/extensions/active-pane-ui"
+TEST_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/active-pane-ui"
 TEST_FILES=(
   "$TEST_DIR/render.test.ts"
   "$TEST_DIR/herdr-focus.test.ts"

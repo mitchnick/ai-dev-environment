@@ -126,16 +126,21 @@ description = "pane move menu (re-split, swap, new tab)"
 
 # Arrange existing panes: wide uses up to four columns; laptop uses up to two.
 # Install helpers/herdr-arrange and lib/herdr-arrange before enabling these keys.
+#
+# --socket is explicit: Herdr's type = "shell" bindings export only
+# HERDR_BIN_PATH and HERDR_ACTIVE_{WORKSPACE,TAB,PANE}_ID/_PANE_CWD, never
+# HERDR_SOCKET_PATH, and arrange.py refuses to guess a session. Without it
+# both keys fail silently.
 [[keys.command]]
 key = "cmd+shift+r"
 type = "shell"
-command = "~/.local/bin/herdr-arrange wide --focused"
+command = "~/.local/bin/herdr-arrange wide --focused --socket ~/.config/herdr/herdr.sock"
 description = "rearrange panes: wide (4 columns)"
 
 [[keys.command]]
 key = "cmd+ctrl+r"
 type = "shell"
-command = "~/.local/bin/herdr-arrange laptop --focused"
+command = "~/.local/bin/herdr-arrange laptop --focused --socket ~/.config/herdr/herdr.sock"
 description = "rearrange panes: laptop (2 columns)"
 
 # Reshape the current tab: big pane left, the rest as a 2-row grid on the right.
@@ -240,6 +245,51 @@ type = "shell"
 command = "~/.local/bin/herdr-agent-view toggle"
 description = "agents panel: all <-> attention"
 
+# --- Scrollback search, copy mode, and token extraction ---
+# The copy-search plugin ships without keys. Ghostty's own Cmd+F find bar only
+# sees the rendered window, not Herdr panes, so these chords are what actually
+# search a pane's scrollback. Build and enable the plugin before binding them.
+#
+# Cmd+Shift+F / prefix+/ mirror tmux's search muscle memory. Native Ctrl+B, [
+# still opens Herdr's built-in copy mode; the plugin's copy mode adds regex
+# search, copycat patterns, and OSC 52 copy on top.
+
+[[keys.command]]
+key = "cmd+shift+f"
+type = "plugin_action"
+command = "copy-search.search"
+description = "search this pane's scrollback"
+
+[[keys.command]]
+key = "prefix+slash"
+type = "plugin_action"
+command = "copy-search.search"
+description = "search this pane's scrollback"
+
+[[keys.command]]
+key = "cmd+shift+c"
+type = "plugin_action"
+command = "copy-search.copy"
+description = "copy mode (regex search, OSC 52 copy)"
+
+[[keys.command]]
+key = "prefix+y"
+type = "plugin_action"
+command = "copy-search.copy"
+description = "copy mode (regex search, OSC 52 copy)"
+
+[[keys.command]]
+key = "cmd+shift+x"
+type = "plugin_action"
+command = "copy-search.extract"
+description = "extract tokens (paths, URLs, hashes)"
+
+[[keys.command]]
+key = "prefix+shift+f"
+type = "plugin_action"
+command = "copy-search.extract"
+description = "extract tokens (paths, URLs, hashes)"
+
 # --- Shared effort shortcut ---
 # cmd+shift+e advances reasoning effort in whichever pane was focused when the
 # key was pressed. Herdr exports HERDR_ACTIVE_PANE_ID (captured at the keypress,
@@ -247,8 +297,8 @@ description = "agents panel: all <-> attention"
 # even if focus moves while it runs.
 #
 # The router asks Herdr which agent occupies that pane, then dispatches:
-# Claude Code gets an adapter that drives its model picker, while Codex and Pi
-# receive alt+shift+e and cycle effort natively. Ghostty must leave this chord
+# Claude Code gets an adapter that drives its model picker. Patched Codex and
+# Pi receive alt+shift+e to cycle. Ghostty leaves this chord
 # unbound for the native Super chord to reach Herdr at all.
 #
 # Absolute interpreter on purpose: type = "shell" inherits the server's PATH,
@@ -289,7 +339,8 @@ mouse_capture = true
 agent_panel_sort = "spaces"
 
 # Custom usage tokens below are optional and remain empty without a provider.
-# No account usage collector or authentication is included in this export.
+# An optional Codex cache collector is included; the publisher and authentication
+# remain local. See ../README.md before enabling account usage.
 [ui.sidebar.agents]
 # Show the generated pane label beneath an agent when that session reports one.
 # Empty metadata rows collapse, so unlabeled sessions stay on one row.

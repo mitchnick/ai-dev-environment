@@ -102,6 +102,8 @@ describe('Herdr pane focus queries', () => {
 			connections += 1
 			resolveConnected?.()
 			socket.on('close', () => resolveClosed?.())
+			// Consume the request so the peer's EOF can close this socket.
+			socket.resume()
 		})
 		await new Promise<void>((resolve) => server!.listen(socketPath, resolve))
 

@@ -51,6 +51,10 @@ The pinned upstream `rust-toolchain.toml` selects Rust 1.96.1. On macOS, Homebre
 `zig@0.15` is keg-only, so `ZIG` must point at its executable. Check the version
 before building; a different Zig release is not validated here.
 
+If rustup was installed with Homebrew, add its command shims to PATH before
+running Cargo: `export PATH="$(brew --prefix rustup)/bin:$PATH"`. The
+`~/.cargo/bin` path below is for the standard rustup installer.
+
 From this export's repository root, copy only the two patches and their guides:
 
 ```sh

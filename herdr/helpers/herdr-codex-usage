@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Refresh Herdr's OpenAI usage cache through Codex's authenticated app server."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import selectors
+import shutil
+import subprocess
+import tempfile
+import time
+
+
+def find_codex():
+    configured = os.environ.get("CODEX_BIN")
+    candidates = [configured] if configured else [shutil.which("codex")]
+    if not configured:
+        candidates.extend(sorted(
+            (Path.home() / ".nvm/versions/node").glob("*/bin/codex"),
+            key=lambda path: path.stat().st_mtime, reverse=True,
+        ))
+    for candidate in candidates:
+        if candidate and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise RuntimeError("Codex executable unavailable")
+
+
+def read_usage(codex, timeout=25):
+    env = dict(os.environ)
+    env["PATH"] = str(Path(codex).parent) + os.pathsep + env.get("PATH", "/usr/bin:/bin")
+    process = subprocess.Popen(
+        [codex, "app-server", "--stdio"], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
+    )
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    buffer = b""
+    deadline = time.monotonic() + timeout
+
+    def send(message):
+        process.stdin.write((json.dumps(message) + "\n").encode())
+        process.stdin.flush()
+
+    def response(request_id):
+        nonlocal buffer
+        while True:
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                message = json.loads(line)
+                if message.get("id") == request_id:
+                    if "error" in message:
+                        raise RuntimeError("Codex could not read account usage")
+                    return message["result"]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise RuntimeError("Codex usage request timed out")
+            chunk = os.read(process.stdout.fileno(), 65536)
+            if not chunk:
+                raise RuntimeError("Codex app server closed before returning usage")
+            buffer += chunk
+            if len(buffer) > 1_000_000:
+                raise RuntimeError("Codex usage response exceeded size limit")
+
+    try:
+        send({"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "herdr_usage", "version": "1.0.0"},
+        }})
+        response(1)
+        send({"method": "initialized", "params": {}})
+        send({"id": 2, "method": "account/rateLimits/read", "params": {
+            "excludeResetCreditDetails": True,
+        }})
+        return response(2)
+    finally:
+        selector.close()
+        process.stdin.close()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        process.stdout.close()
+
+
+def cache_payload(result):
+    limits = (result.get("rateLimitsByLimitId") or {}).get("codex") or result["rateLimits"]
+    windows = {}
+    for source, target in (("primary", "primary_window"), ("secondary", "secondary_window")):
+        window = limits.get(source)
+        if window and isinstance(window.get("usedPercent"), (int, float)):
+            windows[target] = {
+                "used_percent": window["usedPercent"],
+                "reset_at": window.get("resetsAt"),
+                "limit_window_seconds": (window.get("windowDurationMins") or 0) * 60,
+            }
+    if "primary_window" not in windows:
+        raise RuntimeError("Codex returned no primary usage window")
+    return {"rate_limit": windows, "source": "codex-app-server"}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cache", type=Path, default=Path.home() / ".pi/agent/openai-usage-cache.json")
+    args = parser.parse_args()
+    payload = cache_payload(read_usage(find_codex()))
+    args.cache.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=args.cache.name + ".", dir=args.cache.parent)
+    try:
+        with os.fdopen(fd, "w") as output:
+            json.dump(payload, output)
+            output.write("\n")
+        os.replace(temporary, args.cache)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, KeyError, RuntimeError) as error:
+        raise SystemExit(f"herdr-codex-usage: {error}")

@@ -5,7 +5,7 @@ Needs input gets one ding and desktop popup. Finished work stays in the sidebar,
 ## Inventory
 
 - `config/config.toml` — preferences and all keybindings
-- `helpers/` — agent-view, tab-movement, and pane-arrangement launchers
+- `helpers/` — agent-view, tab-movement, pane-arrangement launchers, and Codex usage collection
 - [`lib/herdr-arrange/`](lib/herdr-arrange/README.md) — arranger library, unit tests, and optional isolated integration tests
 - [`extensions/custom/herdr-attention/`](extensions/custom/herdr-attention/README.md) — blocked-only notification plugin and tests
 - [`agent-detection/`](agent-detection/README.md) — Claude screen spinner override and synthetic regression checks
@@ -108,6 +108,15 @@ herdr server reload-config
 
 No server or agent restart is needed for config or detector reloads. Optional sidebar usage tokens remain empty without a separate provider, which is excluded from this export. Run `~/.local/bin/herdr-agent-view rest` to apply stable space/tab/pane ordering; repeat after a server restart. The agent-view and tab-movement helpers target the default local socket; the arranger requires `HERDR_SOCKET_PATH` or explicit `--socket`.
 
+The optional `helpers/herdr-codex-usage` collector reads account usage through
+Codex 0.154.0's `account/rateLimits/read` API and atomically updates
+`~/.pi/agent/openai-usage-cache.json` (override with `--cache`). It uses Codex's
+existing login and token refresh; Pi authentication is not required. Install it
+in `~/.local/bin` and call it from the local usage publisher before its Pi fallback.
+Set `CODEX_BIN` in the publisher's LaunchAgent to the same executable used in
+the terminal: LaunchAgents can otherwise pick up an older Homebrew installation.
+The full publisher and account data remain local.
+
 ## Sidebar legend and alerts
 
 These colors are specific to the included Monokai Pro Spectrum theme; other themes can differ.
@@ -157,3 +166,14 @@ HERDR_CONFIG_PATH="$PWD/herdr/config/config.toml" herdr config check
 ```
 
 Individual skills, harness hooks, MCP configuration, authentication, runtime state, and plugin registries remain excluded. Herdr's event handler is packaged with its plugin.
+
+## Historical native-search patch
+
+`patches/native-search-scrollback-v0.8.2.patch` targets Herdr 0.8.2. It does
+not apply to 0.9.0: copy-mode input moved to the client layer. Do not apply it
+to a newer release or downgrade a running server to make it fit. On 0.9.0,
+use `Ctrl+B`, `[`, then `/` for native forward scrollback search. The bundled
+copy-search plugin additionally provides regex search and token extraction;
+link and enable its local directory after building it as its README describes.
+The old patch's configurable one-chord `search_scrollback` action is not
+provided by stock 0.9.0 and would require a separately tested port.

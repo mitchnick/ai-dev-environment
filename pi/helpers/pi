@@ -1,0 +1,12 @@
+#!/bin/sh
+# Keep Pi and its Node subprocesses on the Homebrew runtime, even in an nvm shell.
+# PI_NODE_BIN and PI_CLI_PATH support installations outside the default prefix.
+node_bin="${PI_NODE_BIN:-/opt/homebrew/bin/node}"
+pi_cli="${PI_CLI_PATH:-/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js}"
+if [ ! -x "$node_bin" ] || [ ! -f "$pi_cli" ]; then
+  echo 'pi: set PI_NODE_BIN and PI_CLI_PATH to your Node 22.19+ and Pi installation' >&2
+  exit 1
+fi
+PATH="$(dirname "$node_bin"):$PATH"
+export PATH
+exec "$node_bin" "$pi_cli" "$@"

@@ -27,6 +27,12 @@ macos-titlebar-style = hidden
 window-padding-y = 8,2
 
 # Font
+# MesloLGS Nerd Font Mono: the p10k-standard Meslo variant, so the statusline's
+# Nerd Font v3 icons (Claude mark, git branch, gauge) resolve in-family rather
+# than falling back. Requires font-meslo-lg-nerd-font >= 3.5.0 for nf-cod-claude
+# (U+EC82) and U+2800, which herdr-usage uses as its padding cell.
+# Restart Ghostty after upgrading the font to load the new glyphs.
+font-family = MesloLGS Nerd Font Mono
 font-size = 14
 
 # Split pane settings

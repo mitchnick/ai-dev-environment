@@ -17,6 +17,9 @@ the earlier light-gray build.
 Dependencies: Git, Rust 1.96.1 via rustup, Just, and Zig 0.15.2. The upstream
 `rust-toolchain.toml` selects Rust 1.96.1. On macOS, install `zig@0.15` with
 Homebrew; set `ZIG` to its executable because the formula is keg-only.
+If rustup also came from Homebrew, run
+`export PATH="$(brew --prefix rustup)/bin:$PATH"` before Cargo; its shims are
+not installed in `~/.cargo/bin` by that formula.
 
 From this export's repository root, copy only the patch and guide:
 

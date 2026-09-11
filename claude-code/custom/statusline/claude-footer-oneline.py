@@ -58,11 +58,11 @@ SUFFIX = "-oneline"
 # padded with spaces to the exact byte length of the match.
 PATCHES = [
     (
-        rb'flexDirection:"column",flexShrink:1,children:\[(\w+),(\w+),!1\]',
+        rb'flexDirection:"column",flexShrink:1,children:\[([\w$]+),([\w$]+),!1\]',
         rb'flexWrap:"wrap",columnGap:2,children:[\1,\2]',
     ),
     (
-        rb'paddingX:(\w+),gap:2,children:',
+        rb'paddingX:([\w$]+),gap:2,children:',
         rb'flexGrow:1,gap:2,children:',
     ),
 ]
