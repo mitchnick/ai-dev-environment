@@ -39,6 +39,36 @@ Agent(
 )
 ```
 
+## Local skills in Codex
+
+Always include the current project's `.claude/skills/**/SKILL.md` files when
+discovering skills for Codex, including applicable directories between the
+working directory and repository root. Read names and descriptions first;
+read a matching skill in full before using it. A skill missing from Codex's
+advertised list is not evidence that it is unavailable locally.
+
+The Codex instruction bridge exposes these directories through relative
+`.agents/skills` symlinks at session start and on prompts. When `.agents/skills`
+is an existing directory, it adds a `claude-local` link inside it. Keep
+`.claude/skills` canonical; do not copy skills or overwrite existing paths.
+If native discovery has not refreshed, use the original skill files directly.
+In Codex, invoke a skill with `$skill-name` (for example, `$create-pr`), or
+select it from `/skills`. Claude Code's `/create-pr` syntax is not a Codex
+slash command; discovering a skill does not register a slash-command alias.
+The preferred shorthand is a literal backslash: `\create-pr`. When a
+Codex message starts with `\skill-name` followed by optional arguments, treat
+it as an explicit invocation of that skill, just like `$skill-name`. Resolve
+the exact skill name, read its SKILL.md in full, and follow it with those
+arguments. If no matching skill exists, report that instead of guessing.
+This shorthand applies to all discovered skills, both project and globally
+available skills, including future additions. No per-skill aliases or edits
+are needed.
+This is an instruction-level shorthand sent as ordinary text, with no native
+command completion. Quoted examples and questions about the syntax are not
+invocations.
+Map harness-specific tools to Codex's native equivalents while preserving the
+workflow's requirements. Report a required capability that has no equivalent.
+
 ## Web search
 
 The built-in `WebSearch` tool is denied. Web search goes through Keenable's API via the `keenable` CLI:
