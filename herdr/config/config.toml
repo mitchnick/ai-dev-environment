@@ -399,3 +399,16 @@ enabled = false
 # [experimental]
 # Ghostty speaks the Kitty graphics protocol, so this one is safe to try.
 # kitty_graphics = true
+
+# Openr: transcript URLs, including destinations hidden by Markdown rendering.
+[[keys.command]]
+key = "cmd+k"
+type = "plugin_action"
+command = "openr.pick-links"
+description = "open or copy response links"
+
+[[keys.command]]
+key = "prefix+u"
+type = "plugin_action"
+command = "openr.pick-links"
+description = "open or copy response links"

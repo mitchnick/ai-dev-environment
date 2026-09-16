@@ -1,0 +1,64 @@
+id = "openr"
+name = "Openr"
+version = "0.3.0"
+min_herdr_version = "0.7.0"
+description = "Fuzzy-pick recently mentioned file paths and URLs from the current pane (prefix+o: visible content, prefix+shift+o: Claude/Codex session transcript); URLs open in the browser, files in your editor in a new tab or detached."
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "pick"
+title = "Openr: open file/URL from current pane"
+contexts = ["workspace"]
+command = ["bash", "bin/open.sh"]
+
+# visible viewport only — never the Claude/Codex transcript
+[[actions]]
+id = "pick-visible"
+title = "Openr: open file/URL from visible pane content"
+contexts = ["workspace"]
+command = ["bash", "bin/open.sh", "visible"]
+
+# Claude/Codex session transcript only (fails on non-Claude panes)
+[[actions]]
+id = "pick-transcript"
+title = "Openr: open file/URL from Claude/Codex transcript"
+contexts = ["workspace"]
+command = ["bash", "bin/open.sh", "transcript"]
+
+[[actions]]
+id = "install-keybind"
+title = "Openr: bind prefix+o / prefix+shift+o in config.toml"
+contexts = ["global", "workspace"]
+command = ["bash", "bin/install-keybind.sh"]
+
+# binds the keys on first server start after install (silent no-op once bound)
+# Automatic key installation disabled in this local adaptation.
+
+[[panes]]
+id = "picker"
+title = "Openr"
+placement = "popup"
+command = ["zsh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/pane-pick\""]
+
+# Default binds (install-keybind writes these to ~/.config/herdr/config.toml):
+#
+#   [[keys.command]]
+#   key = "prefix+o"
+#   type = "plugin_action"
+#   command = "openr.pick-visible"
+#   description = "open file/URL from visible pane"
+#
+#   [[keys.command]]
+#   key = "prefix+shift+o"
+#   type = "plugin_action"
+#   command = "openr.pick-transcript"
+#   description = "open file/URL from Claude/Codex transcript"
+#
+# `openr.pick` (auto: Claude pane → transcript, otherwise viewport) stays
+# available for a custom bind. After edits: `herdr server reload-config`.
+
+[[actions]]
+id = "pick-links"
+title = "Openr: links from Claude or Codex response history"
+contexts = ["workspace"]
+command = ["bash", "bin/open.sh", "links"]

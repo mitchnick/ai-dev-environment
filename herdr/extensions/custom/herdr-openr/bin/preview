@@ -1,0 +1,34 @@
+#!/usr/bin/env zsh
+# fzf preview helper: preview <kind> <target> <cwd>
+kind="$1"; target="$2"; cwd="${3:-$HOME}"
+
+if [[ $kind == url ]]; then
+  print -r -- "$target"
+  exit 0
+fi
+
+lineno=""
+if [[ $target == *:<-> ]]; then
+  lineno="${target##*:}"
+  target="${target%:*}"
+fi
+target="${target/#\~/$HOME}"
+[[ $target == /* ]] || target="$cwd/$target"
+
+# header: long paths get ellipsized on the left in the list, so show the
+# file name prominently above the preview
+bold=$'\e[1m'; dim=$'\e[2m'; reset=$'\e[0m'
+print -r -- "${bold}${target:t}${reset}${lineno:+ ${dim}:$lineno${reset}}"
+print -r -- "${target:h}" | fold -w "${FZF_PREVIEW_COLUMNS:-80}" | while IFS= read -r l; do print -r -- "${dim}${l}${reset}"; done
+w="${FZF_PREVIEW_COLUMNS:-80}"
+print -r -- "${dim}${(l:$w::─:)}${reset}"
+
+if [[ -d $target ]]; then
+  ls -la "$target"
+elif command -v bat >/dev/null; then
+  args=()
+  [[ -n $lineno ]] && args+=(--highlight-line "$lineno" --line-range "$((lineno > 5 ? lineno - 5 : 1)):")
+  bat --color=always --style=numbers "${args[@]}" "$target"
+else
+  cat "$target"
+fi

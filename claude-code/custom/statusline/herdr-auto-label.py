@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 
-MODEL = os.environ.get("HERDR_AUTO_LABEL_MODEL", "openai-codex/gpt-5.3-codex-spark")
+MODEL = os.environ.get("HERDR_AUTO_LABEL_MODEL", "openai-codex/gpt-5.6-luna")
 SYSTEM_PROMPT = """Return only a lowercase one- or two-word kebab-case label for the functional area of work in the prompt.
 Never include the project name. Prefer concrete nouns such as auth-redirect, pane-labels, tests, deployment, or billing.
 Do not explain the answer. Do not use punctuation other than one optional hyphen."""

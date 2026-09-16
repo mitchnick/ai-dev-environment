@@ -63,6 +63,15 @@ token block. Compatibility beyond the pinned version is not established.
 - `extensions/custom/herdr-copy-search/`
 - `extensions/custom/herdr-pane-mover/`
 
+## Response link picker
+
+[Openr](extensions/custom/herdr-openr/README.md) is installed as a local adaptation
+of `wraithyy/herdr-openr` at `12089bf35bd0f47923adc245aaa0181ab5b3ff32`.
+**Cmd+K** (fallback **Ctrl+B, U**) lists URLs from the current Claude or Codex
+session, including Markdown destinations hidden on screen. Enter or double-click
+opens; Ctrl+Y copies; Escape closes. Requires Python 3, jq, zsh and fzf.
+See its README for installation, transcript limits and tests.
+
 ## External extensions
 
 - [`edouard-andrei/herdr-layout-tools`](https://github.com/edouard-andrei/herdr-layout-tools), version 0.4.0, pinned at `826364134071e470f1d54e69b8ab8dfd49972477`

@@ -1,0 +1,128 @@
+#!/usr/bin/env zsh
+# Pane `openr.picker`: fzf over the pre-extracted candidate list (built by
+# open.sh, passed via OPENR_LIST). Enter opens: URLs via url_cmd (detached),
+# files via file_cmd inside a new tab in the current workspace. Both commands
+# come from openr.conf; {file} {line} {url} are placeholders.
+set -u
+
+herdr_bin="${HERDR_BIN_PATH:-herdr}"
+cwd="${OPENR_CWD:-$HOME}"
+list="${OPENR_LIST:?OPENR_LIST not set}"
+
+file_cmd='nvim +{line} {file}'
+url_cmd=""            # default resolved per-platform below unless set in conf
+file_open_in="tab"
+preview="1"
+
+# platform helpers: macOS open/pbcopy vs Linux xdg-open/wl-copy/xclip
+opener() {
+  if command -v open >/dev/null; then echo open
+  elif command -v xdg-open >/dev/null; then echo xdg-open
+  fi
+}
+clip() {
+  if command -v pbcopy >/dev/null; then pbcopy
+  elif command -v wl-copy >/dev/null; then wl-copy
+  elif command -v xclip >/dev/null; then xclip -selection clipboard
+  else cat > /dev/null; fi
+}
+conf="$HOME/.config/herdr/plugins/config/openr/openr.conf"
+[[ -r $conf ]] && source "$conf"
+
+die() {
+  print -u2 "$*"
+  print -nu2 'Press any key to close…'
+  read -k1 -s 2>/dev/null || sleep 2
+  exit 1
+}
+command -v fzf >/dev/null || die "openr: fzf not installed"
+[[ -s $list ]] || die "openr: candidate list missing"
+trap 'rm -f "$list"' EXIT
+
+# preview: file contents via bat/cat (with :line highlight), URLs as-is
+preview_args=()
+if [[ $preview == 1 ]]; then
+  plugin_root="${HERDR_PLUGIN_ROOT:-${0:A:h:h}}"
+  preview_args=(--preview "${(q)plugin_root}/bin/preview {1} {2} ${(q)cwd}" --preview-window 'right:55%:wrap')
+fi
+
+out="$(fzf < "$list" \
+  --delimiter=$'\t' --with-nth=3 \
+  --prompt='link / file ▸ ' --bind='double-click:accept' \
+  --header='enter open · ctrl-f reveal · ctrl-y copy · esc cancel' \
+  --expect=ctrl-f,ctrl-y \
+  --reverse --cycle --no-multi --no-sort \
+  "${preview_args[@]}")" || exit 0
+
+key="${out%%$'\n'*}"
+choice="${out#*$'\n'}"
+[[ -n $choice ]] || exit 0
+
+kind="${choice%%$'\t'*}"
+target="${choice#*$'\t'}"
+target="${target%%$'\t'*}"
+
+# resolve file target: split off :line, expand ~, root against pane cwd
+lineno="1"
+if [[ $kind == file ]]; then
+  if [[ $target == *:<-> ]]; then
+    lineno="${target##*:}"
+    target="${target%:*}"
+  fi
+  target="${target/#\~/$HOME}"
+  [[ $target == /* ]] || target="$cwd/$target"
+fi
+
+case $key in
+  ctrl-y)
+    print -rn -- "$target" | clip
+    exit 0 ;;
+  ctrl-f)
+    # reveal in the file manager: Finder supports open -R, elsewhere open the dir
+    op="$(opener)"
+    [[ -n $op ]] || die "openr: no opener found (install xdg-utils)"
+    if [[ $kind == file ]]; then
+      if [[ $OSTYPE == darwin* ]]; then
+        open -R "$target"
+      else
+        "$op" "$(dirname "$target")"
+      fi
+    else
+      "$op" "$target"
+    fi
+    exit 0 ;;
+esac
+
+# {file}/{url} substitutions are shell-quoted ((q)) — candidates come from
+# untrusted pane/transcript text, they must never reach zsh -c unescaped.
+# Templates therefore use bare {file}/{url}, no surrounding quotes.
+if [[ $kind == url ]]; then
+  if [[ -z $url_cmd ]]; then
+    op="$(opener)"
+    [[ -n $op ]] || die "openr: no opener found (install xdg-utils)"
+    url_cmd="$op {url}"
+  fi
+  cmd="${url_cmd//\{url\}/${(q)target}}"
+  nohup zsh -c "$cmd" >/dev/null 2>&1 &!
+  exit 0
+fi
+
+cmd="${file_cmd//\{file\}/${(q)target}}"
+cmd="${cmd//\{line\}/$lineno}"
+
+# debug trail (last run only) for "it opened the wrong thing" reports
+print -r -- "$(date '+%H:%M:%S') kind=$kind key=$key target=$target line=$lineno cmd=$cmd" \
+  > "$HOME/.config/herdr/plugins/config/openr/last.log" 2>/dev/null
+
+if [[ $file_open_in == detached ]]; then
+  nohup zsh -c "$cmd" >/dev/null 2>&1 &!
+  exit 0
+fi
+
+# terminal editor: new tab in the current workspace; pane run executes
+# directly — no racing the shell prompt with typed input
+new_pane="$("$herdr_bin" tab create --cwd "$cwd" --focus 2>/dev/null \
+  | jq -r '.result.root_pane.pane_id // empty')"
+[[ -n $new_pane ]] || die "openr: tab create failed"
+"$herdr_bin" pane run "$new_pane" "$cmd"
+exit 0
