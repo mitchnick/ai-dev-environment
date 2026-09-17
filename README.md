@@ -2,6 +2,8 @@
 
 Public, sanitized configuration for an AI coding setup on macOS.
 
+**New machine or agent handoff: start with [SETUP.md](SETUP.md).** Work through it in order for installation, configuration, optional builds, missing integrations, verification, and rollback.
+
 See [Shortcuts](SHORTCUTS.md) for a copyable cheat sheet of Herdr, Ghostty, and Claude Code shortcuts and commands.
 
 | Folder | Contents |
