@@ -5,6 +5,7 @@ Local skill discovery and invocation guidance updated September 11, 2026.
 
 ## Configuration
 
+- `config/aliases.sh` — `cx` alias, matching the local shell configuration
 - `config/config.toml` — model, reasoning effort, approval reviewer, terminal display, keybindings, hook feature preference, and rate-limit notice preference
 - `config/themes/claude-nerd.tmTheme` — custom syntax theme referenced by the configuration
 - `config/AGENTS.md` — relative link to the shared global instructions in `../claude-code/config/CLAUDE.md` (from this directory)
@@ -23,6 +24,10 @@ the personal home path generalized and a private project reference removed.
 - Individual skills, plugin state, and local command approval rules
 
 ## Use
+
+Copy the alias from `config/aliases.sh` into `~/.zshrc`, then reload your shell.
+`cx` runs `codex --dangerously-bypass-approvals-and-sandbox`; additional arguments
+are passed through, for example `cx resume`. It bypasses approvals and sandboxing.
 
 Merge the preferences you want into `~/.codex/config.toml`. Copy the theme to
 `~/.codex/themes/claude-nerd.tmTheme`. For global instructions, copy the contents
