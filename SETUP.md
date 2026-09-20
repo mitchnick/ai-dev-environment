@@ -693,11 +693,67 @@ Replace those paths before executing. Inspect the generated `sessions/` Markdown
 
 Removing `AGENT_SESSION_ARCHIVE_NO_GIT=1` permits automatic session commits **and pushes to origin**, potentially including other pending branch commits. Enable this only when the owner explicitly wants that workflow and the destination repository is appropriate for transcripts. It is not required for a working coding environment. Do not backfill existing private sessions during setup. Claude's SessionEnd hook and any Codex archive integration are not supplied by copying the helper.
 
+### Jev classifier primitive (Claude Code and Codex)
+
+The bundled Python 3 client provides quick Choice, yes/no, Score, and batch
+requests to TypeSafe. It works from any directory without Knox, direnv, Node,
+MCP configuration, or a subagent. Install the command and the shared skill:
+
+```sh
+mkdir -p "$HOME/.local/bin" "$HOME/.claude/skills/jev" "$HOME/.agents/skills"
+new_config "$AI_ENV_REPO/claude-code/custom/jev/jev.py" "$HOME/.local/bin/jev"
+chmod +x "$HOME/.local/bin/jev"
+new_config "$AI_ENV_REPO/claude-code/custom/jev/SKILL.md" "$HOME/.claude/skills/jev/SKILL.md"
+```
+
+Keep `~/.claude/skills/jev` canonical. If `~/.agents/skills/jev` is absent, link it:
+
+```sh
+ln -s "$HOME/.claude/skills/jev" "$HOME/.agents/skills/jev"
+```
+
+Preserve an existing destination; if it already resolves to the canonical skill,
+no change is needed. The shared instructions installed in section 4 tell both
+agents when to call Jev. Merge the `Jev classifier primitive` section into an
+existing global instruction file if necessary.
+
+Credentials resolve from `TYPESAFE_API_KEY`, then `~/.config/jev/env`. Create the
+private file with restrictive permissions before entering a key in your editor:
+
+```sh
+mkdir -p "$HOME/.config/jev"
+(umask 077; touch "$HOME/.config/jev/env")
+chmod 600 "$HOME/.config/jev/env"
+```
+
+Add `TYPESAFE_API_KEY=<your key>` inside that file. Do not put a real key in shell
+commands, logs, this repository, or the skill. An existing key can be transferred
+privately; setup must not depend on another project's environment.
+
+Verify offline, then make one small live call using synthetic input:
+
+```sh
+python3 -m unittest discover -s "$AI_ENV_REPO/claude-code/custom/jev"
+"$HOME/.local/bin/jev" --help
+(cd /tmp && "$HOME/.local/bin/jev" choice 'Which team handles this?' billing support other --text 'Please refund a duplicate invoice charge.')
+```
+
+Expect JSON with `answers.decision.choice` equal to `billing`. Live verification
+uses the TypeSafe account. Exit 0 means a valid response, including negative or
+uncertain answers; failure exits 1. No automatic retries or confidence cutoff
+are applied. See [the command guide](claude-code/custom/jev/README.md) for formats.
+
+Start fresh Claude Code and Codex sessions and check skill discovery (`/jev` in
+Claude Code; `$jev` or the `/skills` picker in Codex). The instruction shorthand
+`\jev` also works in Codex. Automatic selection remains the agent's decision.
+For rollback, remove only this command, skill/link, private credential file, and
+Jev instruction section, restoring any files backed up during installation.
+
 ### Skills, hooks, MCPs, research, and unavailable features
 
 | Item | Required disposition before handoff |
 |---|---|
-| Individual skills, custom agents, prompt templates | Obtain the owner's separate source or mark unavailable; plugin-installed skills cover only their plugin contents |
+| Individual skills, custom agents, prompt templates | Jev is bundled above; for other skills, obtain the owner's separate source or mark unavailable; plugin-installed skills cover only their plugin contents |
 | Claude hooks | Restore privately if desired; helper files alone do not activate labels, archiving, or automatic footer patching |
 | Codex instruction bridge | Restore the private bridge/hooks or use manual skill links below; `features.hooks` alone is insufficient |
 | MCP server definitions, OAuth, service credentials | Recreate from an authorized private source and authenticate each connection; never infer secrets or copy another machine's trust registry |

@@ -16,7 +16,7 @@ See [Shortcuts](SHORTCUTS.md) for a copyable cheat sheet of Herdr, Ghostty, and 
 
 ## Excluded
 
-- Individual skills
+- Individual skills except the bundled Jev primitive
 - Hooks
 - MCP server configuration
 - Authentication, tokens, passwords, caches, history, and logs

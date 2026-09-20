@@ -69,6 +69,18 @@ invocations.
 Map harness-specific tools to Codex's native equivalents while preserving the
 workflow's requirements. Report a required capability that has no equivalent.
 
+## Jev classifier primitive
+
+Use `~/.local/bin/jev` for small bounded semantic decisions over supplied evidence:
+classifying into labels, selecting a candidate, yes/no checks, or rubric scoring.
+It is available globally without project setup. For example:
+`jev choice 'Which team?' billing support other --text 'I was charged twice.'`
+JSON output includes the answer and probabilities; failures exit 1. Batch related
+independent questions into one request. Read `~/.claude/skills/jev/SKILL.md` for
+batch/structured input. Use this as a quick shell tool call during other work;
+no subagent is needed. Keep exact calculations in code, and inspect uncertain
+answers yourself. Jev is not a general code reviewer or a source of new facts.
+
 ## Web search
 
 The built-in `WebSearch` tool is denied. Web search goes through Keenable's API via the `keenable` CLI:
