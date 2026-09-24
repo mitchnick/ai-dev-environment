@@ -297,8 +297,9 @@ description = "extract tokens (paths, URLs, hashes)"
 # even if focus moves while it runs.
 #
 # The router asks Herdr which agent occupies that pane, then dispatches:
-# Claude Code gets an adapter that drives its model picker. Patched Codex and
-# Pi receive alt+shift+e to cycle. Ghostty leaves this chord
+# Claude Code gets an adapter that drives its model picker. Recognized managed
+# Codex and Pi receive alt+shift+e; stock Codex gets alt+. to increase effort.
+# Ghostty leaves this chord
 # unbound for the native Super chord to reach Herdr at all.
 #
 # Absolute interpreter on purpose: type = "shell" inherits the server's PATH,

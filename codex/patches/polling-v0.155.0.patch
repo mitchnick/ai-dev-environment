@@ -1,0 +1,272 @@
+diff --git a/codex-rs/core/src/tools/code_mode/mod.rs b/codex-rs/core/src/tools/code_mode/mod.rs
+index 7db0e8e82..359c780e9 100644
+--- a/codex-rs/core/src/tools/code_mode/mod.rs
++++ b/codex-rs/core/src/tools/code_mode/mod.rs
+@@ -53,7 +53,7 @@ pub(crate) use wait_handler::CodeModeWaitHandler;
+ 
+ pub(crate) const PUBLIC_TOOL_NAME: &str = codex_code_mode::PUBLIC_TOOL_NAME;
+ pub(crate) const WAIT_TOOL_NAME: &str = codex_code_mode::WAIT_TOOL_NAME;
+-pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = codex_code_mode::DEFAULT_WAIT_YIELD_TIME_MS;
++pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = 60_000;
+ 
+ /// Returns true for the code-mode `exec` tool in the default namespace.
+ pub(crate) fn is_exec_tool_name(tool_name: &ToolName) -> bool {
+diff --git a/codex-rs/core/src/tools/code_mode/wait_spec.rs b/codex-rs/core/src/tools/code_mode/wait_spec.rs
+index 72bb09084..74b0fefea 100644
+--- a/codex-rs/core/src/tools/code_mode/wait_spec.rs
++++ b/codex-rs/core/src/tools/code_mode/wait_spec.rs
+@@ -1,3 +1,4 @@
++use super::DEFAULT_WAIT_YIELD_TIME_MS;
+ use codex_tools::JsonSchema;
+ use codex_tools::ResponsesApiTool;
+ use codex_tools::ToolSpec;
+@@ -12,7 +13,7 @@ pub(crate) fn create_wait_tool() -> ToolSpec {
+         (
+             "yield_time_ms".to_string(),
+             JsonSchema::number(Some(
+-                "Wait before yielding more output. Defaults to 10000 ms.".to_string(),
++                "Wait before yielding more output. Defaults to 60000 ms; completion returns immediately.".to_string(),
+             )),
+         ),
+         (
+@@ -34,7 +35,12 @@ pub(crate) fn create_wait_tool() -> ToolSpec {
+         description: format!(
+             "Waits on a yielded `{}` cell and returns new output or completion.\n{}",
+             codex_code_mode::PUBLIC_TOOL_NAME,
+-            codex_code_mode::build_wait_tool_description().trim()
++            codex_code_mode::build_wait_tool_description()
++                .trim()
++                .replace(
++                    "Defaults to 10000 ms.",
++                    &format!("Defaults to {DEFAULT_WAIT_YIELD_TIME_MS} ms."),
++                )
+         ),
+         strict: false,
+         parameters: JsonSchema::object(
+@@ -61,7 +67,12 @@ mod tests {
+                 description: format!(
+                     "Waits on a yielded `{}` cell and returns new output or completion.\n{}",
+                     codex_code_mode::PUBLIC_TOOL_NAME,
+-                    codex_code_mode::build_wait_tool_description().trim()
++                    codex_code_mode::build_wait_tool_description()
++                        .trim()
++                        .replace(
++                            "Defaults to 10000 ms.",
++                            &format!("Defaults to {DEFAULT_WAIT_YIELD_TIME_MS} ms."),
++                        )
+                 ),
+                 strict: false,
+                 defer_loading: None,
+@@ -90,7 +101,7 @@ mod tests {
+                         (
+                             "yield_time_ms".to_string(),
+                             JsonSchema::number(Some(
+-                                "Wait before yielding more output. Defaults to 10000 ms."
++                                "Wait before yielding more output. Defaults to 60000 ms; completion returns immediately."
+                                     .to_string(),
+                             )),
+                         ),
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_common.rs b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
+index 9cbe72df8..6341d04e7 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_common.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
+@@ -1,6 +1,5 @@
+ use crate::agent::role::apply_role_to_config;
+ use crate::config::Config;
+-use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
+ use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
+ use crate::function_tool::FunctionCallError;
+ use crate::session::session::Session;
+@@ -26,9 +25,9 @@ use codex_protocol::user_input::UserInput;
+ use serde::Serialize;
+ use serde_json::Value as JsonValue;
+ 
+-/// Minimum wait timeout to prevent tight polling loops from burning CPU.
+-pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
+-pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
++/// Minimum wait timeout to avoid waking the model while agents are still working.
++pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 60_000;
++pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 60_000;
+ pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
+ pub(crate) const MAX_SPAWN_AGENT_MODEL_OVERRIDES: usize = 5;
+ 
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+index 1f34d6908..af589f501 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+@@ -3240,10 +3240,13 @@ async fn wait_agent_times_out_when_status_is_not_final() {
+             "timeout_ms": MIN_WAIT_TIMEOUT_MS
+         })),
+     );
++    // Exercise the real timeout without spending a minute of wall time.
++    tokio::time::pause();
+     let output = WaitAgentHandler::default()
+         .handle(invocation)
+         .await
+         .expect("wait_agent should succeed");
++    tokio::time::resume();
+     let (content, success) = expect_text_output(output);
+     let result: wait::WaitAgentResult =
+         serde_json::from_str(&content).expect("wait_agent result should be json");
+diff --git a/codex-rs/core/src/tools/handlers/shell_spec.rs b/codex-rs/core/src/tools/handlers/shell_spec.rs
+index b39408a37..0a1200cda 100644
+--- a/codex-rs/core/src/tools/handlers/shell_spec.rs
++++ b/codex-rs/core/src/tools/handlers/shell_spec.rs
+@@ -28,9 +28,9 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
+     include_windows_shell_guidance: bool,
+ ) -> ToolSpec {
+     let yield_time_ms_description = if cfg!(windows) {
+-        "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."
++        "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 30000 ms default. Effective range on Windows is 10000-30000 ms."
+     } else {
+-        "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."
++        "Wait before yielding output. Defaults to 30000 ms; effective range is 250-30000 ms. Commands that finish sooner return immediately."
+     };
+     let mut properties = BTreeMap::from([
+         (
+@@ -131,7 +131,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
+         (
+             "yield_time_ms".to_string(),
+             JsonSchema::number(Some(
+-                "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.".to_string(),
++                "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms. Empty polls wait at least 60000 ms for pipe-backed commands or 5000 ms for PTYs, capped by the configured background timeout (default 300000 ms). Process exit returns immediately.".to_string(),
+             )),
+         ),
+         (
+diff --git a/codex-rs/core/src/tools/handlers/shell_spec_tests.rs b/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
+index 000add0bb..7e6f8bdca 100644
+--- a/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
++++ b/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
+@@ -30,9 +30,9 @@ fn exec_command_tool_matches_expected_spec() {
+             .to_string()
+     };
+     let yield_time_ms_description = if cfg!(windows) {
+-        "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."
++        "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 30000 ms default. Effective range on Windows is 10000-30000 ms."
+     } else {
+-        "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."
++        "Wait before yielding output. Defaults to 30000 ms; effective range is 250-30000 ms. Commands that finish sooner return immediately."
+     };
+ 
+     let mut properties = BTreeMap::from([
+@@ -134,7 +134,7 @@ fn write_stdin_tool_matches_expected_spec() {
+         (
+             "yield_time_ms".to_string(),
+             JsonSchema::number(Some(
+-                "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.".to_string(),
++                "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms. Empty polls wait at least 60000 ms for pipe-backed commands or 5000 ms for PTYs, capped by the configured background timeout (default 300000 ms). Process exit returns immediately.".to_string(),
+             )),
+         ),
+         (
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec.rs b/codex-rs/core/src/tools/handlers/unified_exec.rs
+index 9f9f8a8cf..0ec27c9d3 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec.rs
+@@ -60,7 +60,7 @@ struct ExecCommandEnvironmentArgs {
+ }
+ 
+ fn default_exec_yield_time_ms() -> u64 {
+-    10_000
++    30_000
+ }
+ 
+ fn default_write_stdin_yield_time_ms() -> u64 {
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+index c04c1a897..7ce8245ec 100644
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -950,11 +950,17 @@ impl UnifiedExecProcessManager {
+         }
+ 
+         let yield_time_ms = {
+-            // Empty polls use configurable background timeout bounds. Non-empty
+-            // writes keep a fixed max cap so interactive stdin remains responsive.
++            // Pipe-backed commands cannot accept input. Wait for their exit in
++            // the harness instead of waking the model every five seconds.
++            // Preserve the configured cap and interactive terminal latency.
+             let time_ms = request.yield_time_ms.max(MIN_YIELD_TIME_MS);
+             if request.input.is_empty() {
+-                time_ms.clamp(MIN_EMPTY_YIELD_TIME_MS, self.max_write_stdin_yield_time_ms)
++                let minimum = if tty {
++                    MIN_EMPTY_YIELD_TIME_MS
++                } else {
++                    60_000.min(self.max_write_stdin_yield_time_ms)
++                };
++                time_ms.clamp(minimum, self.max_write_stdin_yield_time_ms)
+             } else {
+                 time_ms.min(MAX_YIELD_TIME_MS)
+             }
+diff --git a/codex-rs/core/tests/suite/unified_exec.rs b/codex-rs/core/tests/suite/unified_exec.rs
+index 5d4670044..5d0d9d899 100644
+--- a/codex-rs/core/tests/suite/unified_exec.rs
++++ b/codex-rs/core/tests/suite/unified_exec.rs
+@@ -3326,6 +3326,69 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
+     Ok(())
+ }
+ 
++#[test_case::test_case(false, 300_000, true; "pipe waits for exit")]
++#[test_case::test_case(true, 300_000, false; "pty stays responsive")]
++#[test_case::test_case(false, 5_000, false; "configured cap is preserved")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn unified_exec_background_poll_waits_without_model_wakeups(
++    tty: bool,
++    background_timeout: u64,
++    completes: bool,
++) -> Result<()> {
++    skip_if_target_windows!(Ok(()), "uses a POSIX-only command fixture");
++    skip_if_no_network!(Ok(()));
++    skip_if_sandbox!(Ok(()));
++
++    let builder = test_codex().with_config(move |config| {
++        config.background_terminal_max_timeout = background_timeout;
++    });
++    let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
++    let responses = [
++        (
++            "start",
++            "exec_command",
++            json!({
++                "cmd": "printf progress; sleep 8; printf finished; exit 7",
++                "tty": tty,
++                "yield_time_ms": 250,
++            }),
++        ),
++        (
++            "poll",
++            "write_stdin",
++            json!({"session_id": 1000, "yield_time_ms": 1}),
++        ),
++    ]
++    .into_iter()
++    .map(|(id, tool, args)| {
++        sse(vec![
++            ev_response_created(id),
++            ev_function_call(id, tool, &args.to_string()),
++            ev_completed(id),
++        ])
++    })
++    .chain([sse(vec![ev_completed("done")])])
++    .collect();
++    let requests = mount_sse_sequence(harness.server(), responses).await;
++
++    harness.submit("wait for the background command").await?;
++
++    let start = parse_unified_exec_output(&harness.function_call_stdout("start").await)?;
++    let poll = parse_unified_exec_output(&harness.function_call_stdout("poll").await)?;
++    assert!(start.process_id.is_some());
++    assert!(start.output.contains("progress"));
++    assert_eq!(requests.requests().len(), 3);
++    assert_eq!(
++        (poll.exit_code, poll.process_id.is_none()),
++        (if completes { Some(7) } else { None }, completes)
++    );
++    assert_eq!(poll.output.contains("finished"), completes);
++    // Both exit and the interactive/configured deadlines return well before
++    // the new 60-second floor. A timeout is never reported as completion.
++    assert!(poll.wall_time_seconds < 20.0);
++    Ok(())
++}
++
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn managed_unified_exec_disable_runs_commands_without_retained_authority() -> Result<()> {
+     skip_if_target_windows!(Ok(()), "uses a POSIX-only command fixture");

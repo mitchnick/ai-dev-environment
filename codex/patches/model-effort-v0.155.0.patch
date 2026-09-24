@@ -1,0 +1,278 @@
+diff --git a/codex-rs/tui/src/chatwidget/interaction.rs b/codex-rs/tui/src/chatwidget/interaction.rs
+index 959a5771d..b1ce4b0c3 100644
+--- a/codex-rs/tui/src/chatwidget/interaction.rs
++++ b/codex-rs/tui/src/chatwidget/interaction.rs
+@@ -43,6 +43,17 @@ impl ChatWidget {
+             return;
+         }
+ 
++        // Ghostty maps Cmd+E to Alt+e; enhanced terminals can send Super directly.
++        if key_event.kind == KeyEventKind::Press
++            && key_event.code == KeyCode::Char('e')
++            && matches!(key_event.modifiers, KeyModifiers::SUPER | KeyModifiers::ALT)
++            && self.bottom_pane.no_modal_or_popup_active()
++        {
++            self.open_model_popup();
++            self.request_redraw();
++            return;
++        }
++
+         if self.handle_reasoning_shortcut(key_event) || self.handle_permission_shortcut(key_event) {
+             self.bottom_pane.clear_quit_shortcut_hint();
+             self.quit_shortcut_expires_at = None;
+diff --git a/codex-rs/tui/src/chatwidget/reasoning_shortcuts.rs b/codex-rs/tui/src/chatwidget/reasoning_shortcuts.rs
+index 7ef88ac73..bcd445c8d 100644
+--- a/codex-rs/tui/src/chatwidget/reasoning_shortcuts.rs
++++ b/codex-rs/tui/src/chatwidget/reasoning_shortcuts.rs
+@@ -11,12 +11,17 @@
+ //! active model. Unsupported efforts anchor to the model default, or the first
+ //! advertised effort when the default is absent, before stepping through the
+ //! advertised order. Raising never silently crosses into Max or Ultra; those
+-//! efforts require the explicit advanced-reasoning picker.
++//! efforts require the explicit advanced-reasoning picker. The personal
++//! Cmd+Shift+E shortcut instead cycles all advertised efforts, including the
++//! advanced levels, and wraps to the first choice without changing the model.
+ 
+ use codex_protocol::config_types::ModeKind;
+ use codex_protocol::openai_models::ModelPreset;
+ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
++use crossterm::event::KeyCode;
+ use crossterm::event::KeyEvent;
++use crossterm::event::KeyEventKind;
++use crossterm::event::KeyModifiers;
+ 
+ use super::ChatWidget;
+ use super::PARENT_OWNED_INPUT_MESSAGE;
+@@ -28,6 +33,7 @@ use crate::key_hint::KeyBindingListExt;
+ pub(super) enum ReasoningShortcutDirection {
+     Lower,
+     Raise,
++    Cycle,
+ }
+ 
+ impl ReasoningShortcutDirection {
+@@ -36,6 +42,7 @@ impl ReasoningShortcutDirection {
+         match self {
+             Self::Lower => format!("Reasoning is already at the lowest level ({label})."),
+             Self::Raise => format!("Reasoning is already at the highest level ({label})."),
++            Self::Cycle => format!("Reasoning remains at {label}."),
+         }
+     }
+ }
+@@ -53,7 +60,17 @@ impl ChatWidget {
+     /// persisting them. In Plan mode, shortcuts apply only to the active
+     /// Plan-mode override and skip the global-vs-Plan scope prompt.
+     pub(super) fn handle_reasoning_shortcut(&mut self, key_event: KeyEvent) -> bool {
+-        let direction = if self
++        let cycle_key = key_event.kind == KeyEventKind::Press
++            && matches!(key_event.code, KeyCode::Char('e' | 'E'))
++            && matches!(
++                key_event.modifiers - KeyModifiers::SHIFT,
++                KeyModifiers::SUPER | KeyModifiers::ALT
++            )
++            && (key_event.modifiers.contains(KeyModifiers::SHIFT)
++                || key_event.code == KeyCode::Char('E'));
++        let direction = if cycle_key {
++            ReasoningShortcutDirection::Cycle
++        } else if self
+             .chat_keymap
+             .decrease_reasoning_effort
+             .is_pressed(key_event)
+@@ -95,6 +112,11 @@ impl ChatWidget {
+             return true;
+         };
+ 
++        if direction == ReasoningShortcutDirection::Cycle
++            && preset.supported_reasoning_efforts.len() < 2
++        {
++            return true;
++        }
+         let choices = reasoning_choices(&preset);
+         let configured_effort = self
+             .effective_reasoning_effort()
+@@ -198,6 +220,9 @@ fn next_reasoning_effort(
+                 .and_then(|index| choices.get(index))
+                 .cloned(),
+             ReasoningShortcutDirection::Raise => choices.get(current_index + 1).cloned(),
++            ReasoningShortcutDirection::Cycle => {
++                choices.get((current_index + 1) % choices.len()).cloned()
++            }
+         };
+     }
+ 
+diff --git a/codex-rs/tui/src/chatwidget/tests.rs b/codex-rs/tui/src/chatwidget/tests.rs
+index c7aaa1a7a..b6d66d7bf 100644
+--- a/codex-rs/tui/src/chatwidget/tests.rs
++++ b/codex-rs/tui/src/chatwidget/tests.rs
+@@ -261,6 +261,8 @@ mod misalignment_policy;
+ #[path = "tests/permission_shortcuts_tests.rs"]
+ mod permission_shortcuts_tests;
+ mod permissions;
++#[path = "tests/personal_shortcuts.rs"]
++mod personal_shortcuts;
+ mod plan_mode;
+ #[path = "tests/plugin_catalog_tests.rs"]
+ mod plugin_catalog;
+diff --git a/codex-rs/tui/src/chatwidget/tests/personal_shortcuts.rs b/codex-rs/tui/src/chatwidget/tests/personal_shortcuts.rs
+new file mode 100644
+index 000000000..53403c6ab
+--- /dev/null
++++ b/codex-rs/tui/src/chatwidget/tests/personal_shortcuts.rs
+@@ -0,0 +1,144 @@
++use super::*;
++
++#[tokio::test]
++async fn model_shortcuts_open_picker_without_consuming_draft() {
++    for modifiers in [KeyModifiers::SUPER, KeyModifiers::ALT] {
++        let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
++        chat.thread_id = Some(ThreadId::new());
++        chat.bottom_pane
++            .set_composer_text("keep my draft".into(), Vec::new(), Vec::new());
++        chat.handle_key_event(KeyEvent::new(KeyCode::Char('e'), modifiers));
++        let popup = render_bottom_popup(&chat, /*width*/ 80);
++        assert!(popup.contains("Select Model"));
++        assert_eq!(chat.bottom_pane.composer_text(), "keep my draft");
++        chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
++        assert_eq!(chat.bottom_pane.composer_text(), "keep my draft");
++    }
++}
++
++#[tokio::test]
++async fn effort_cycle_accepts_terminal_encodings_and_preserves_draft_and_model() {
++    for key in [
++        KeyEvent::new(
++            KeyCode::Char('e'),
++            KeyModifiers::SUPER | KeyModifiers::SHIFT,
++        ),
++        KeyEvent::new(
++            KeyCode::Char('E'),
++            KeyModifiers::SUPER | KeyModifiers::SHIFT,
++        ),
++        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT | KeyModifiers::SHIFT),
++        KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT | KeyModifiers::SHIFT),
++        KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT),
++    ] {
++        let (mut chat, mut rx, _ops) = make_chatwidget_manual(Some("gpt-5.4")).await;
++        chat.thread_id = Some(ThreadId::new());
++        chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
++        chat.bottom_pane
++            .set_composer_text("keep my draft".into(), Vec::new(), Vec::new());
++        chat.handle_key_event(key);
++        let updates = std::iter::from_fn(|| rx.try_recv().ok())
++            .filter_map(|event| match event {
++                AppEvent::UpdateReasoningEffort(effort) => Some(effort),
++                AppEvent::UpdateModel(_) | AppEvent::PersistModelSelection { .. } => {
++                    panic!("cycling must not switch or persist the model")
++                }
++                _ => None,
++            })
++            .collect::<Vec<_>>();
++        assert_eq!(updates, vec![Some(ReasoningEffortConfig::High)]);
++        assert_eq!(chat.bottom_pane.composer_text(), "keep my draft");
++        assert_eq!(chat.current_model(), "gpt-5.4");
++        assert!(chat.bottom_pane.no_modal_or_popup_active());
++    }
++}
++
++#[tokio::test]
++async fn effort_cycle_visits_supported_advanced_levels_then_wraps() {
++    let (mut chat, mut rx, _ops) = make_chatwidget_manual(Some("gpt-5.4")).await;
++    chat.thread_id = Some(ThreadId::new());
++    let mut preset = get_available_model(&chat, "gpt-5.4");
++    let efforts = vec![
++        ReasoningEffortConfig::Low,
++        ReasoningEffortConfig::High,
++        ReasoningEffortConfig::XHigh,
++        ReasoningEffortConfig::Max,
++        ReasoningEffortConfig::Ultra,
++    ];
++    preset.supported_reasoning_efforts = efforts
++        .iter()
++        .map(|effort| ReasoningEffortPreset {
++            effort: effort.clone(),
++            description: "test level".to_string(),
++        })
++        .collect();
++    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
++    for (index, current) in efforts.iter().enumerate() {
++        chat.set_reasoning_effort(Some(current.clone()));
++        chat.handle_key_event(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT));
++        let updates = std::iter::from_fn(|| rx.try_recv().ok())
++            .filter_map(|event| match event {
++                AppEvent::UpdateReasoningEffort(effort) => Some(effort),
++                _ => None,
++            })
++            .collect::<Vec<_>>();
++        assert_eq!(
++            updates,
++            vec![Some(efforts[(index + 1) % efforts.len()].clone())]
++        );
++    }
++}
++
++#[tokio::test]
++async fn effort_cycle_leaves_open_picker_in_control() {
++    let (mut chat, mut rx, _ops) = make_chatwidget_manual(Some("gpt-5.4")).await;
++    chat.thread_id = Some(ThreadId::new());
++    chat.open_model_popup();
++    chat.handle_key_event(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT));
++    assert!(
++        std::iter::from_fn(|| rx.try_recv().ok()).all(|event| !matches!(
++            event,
++            AppEvent::UpdateReasoningEffort(_) | AppEvent::UpdatePlanModeReasoningEffort(_)
++        ))
++    );
++}
++
++#[tokio::test]
++async fn effort_cycle_does_nothing_without_multiple_supported_levels() {
++    for count in [0, 1] {
++        let (mut chat, mut rx, _ops) = make_chatwidget_manual(Some("gpt-5.4")).await;
++        chat.thread_id = Some(ThreadId::new());
++        let mut preset = get_available_model(&chat, "gpt-5.4");
++        preset.supported_reasoning_efforts.truncate(count);
++        chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
++        chat.handle_key_event(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT));
++        assert!(
++            std::iter::from_fn(|| rx.try_recv().ok()).all(|event| !matches!(
++                event,
++                AppEvent::UpdateReasoningEffort(_) | AppEvent::UpdatePlanModeReasoningEffort(_)
++            ))
++        );
++    }
++}
++
++#[tokio::test]
++async fn effort_cycle_updates_only_plan_override_in_plan_mode() {
++    let (mut chat, mut rx, _ops) = make_chatwidget_manual(Some("gpt-5.4")).await;
++    chat.thread_id = Some(ThreadId::new());
++    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
++    let mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref()).expect("plan mode");
++    chat.set_collaboration_mask(mask);
++    let _ = drain_insert_history(&mut rx);
++    chat.handle_key_event(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT));
++    let updates = std::iter::from_fn(|| rx.try_recv().ok())
++        .filter_map(|event| match event {
++            AppEvent::UpdatePlanModeReasoningEffort(effort) => Some(effort),
++            AppEvent::UpdateReasoningEffort(_)
++            | AppEvent::PersistModelSelection { .. }
++            | AppEvent::OpenPlanReasoningScopePrompt { .. } => panic!("must update only Plan"),
++            _ => None,
++        })
++        .collect::<Vec<_>>();
++    assert_eq!(updates.len(), 1);
++    assert!(chat.bottom_pane.no_modal_or_popup_active());
++}
+diff --git a/codex-rs/tui/src/version.rs b/codex-rs/tui/src/version.rs
+index 8c8d108dc..4061058c0 100644
+--- a/codex-rs/tui/src/version.rs
++++ b/codex-rs/tui/src/version.rs
+@@ -1,2 +1,7 @@
+ /// The current Codex CLI version as embedded at compile time.
+-pub const CODEX_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
++// Release tags retain the development version in upstream UI snapshots.
++pub const CODEX_CLI_VERSION: &str = if cfg!(test) {
++    "0.0.0"
++} else {
++    env!("CARGO_PKG_VERSION")
++};

@@ -22,3 +22,11 @@ hooks = true
 
 [notice]
 hide_rate_limit_model_nudge = true
+
+# Keep idle waits inside the harness; completion still returns immediately.
+[features.code_mode]
+default_exec_yield_time_ms = 60000
+
+[features.multi_agent_v2]
+min_wait_timeout_ms = 60000
+default_wait_timeout_ms = 60000

@@ -22,7 +22,7 @@ involved.
 native Super chord reaches Herdr, which runs `cycle-effort.py`. That matters
 because the harnesses do not agree on what the key should do:
 
-- **Codex** with the [0.154.0 effort patch](../../codex/patches/README.md)
+- **Codex** with the [managed 0.155.0 shortcut patch](../../codex/patches/README.md)
   and **Pi** cycle effort natively, so the router forwards `alt+shift+e`.
   Codex includes the model's advertised Max and Ultra levels. Ultra also
   enables proactive multi-agent behavior.
@@ -70,12 +70,12 @@ for the picker, plus the `app.thinking.cycle` aliases in
 [`../../pi/config/keybindings.json`](../../pi/config/keybindings.json). Run
 `/reload` in existing sessions.
 
-**Codex 0.154.0** needs the included [native effort patch](../../codex/patches/README.md).
-Stock Codex's Alt+. action stops before Max/Ultra and cannot wrap. Build and
-install the patch, then exit and resume Codex. Existing stock processes listed
-in the installer's temporary `codex-effort-pending.json` retain the old Alt+.
-route until restarted. `Cmd+E` still requires the separate unpublished model
-picker patch; use `/model`.
+**Codex** uses the [managed shortcut build](../../codex/patches/README.md),
+installed outside npm so updates cannot remove it. The router checks the
+foreground executable and its installation fingerprint on every keypress.
+Recognized builds receive full cycling; stock, old, or unrecognized sessions
+receive Alt+. (increase only, stopping before Max/Ultra). Restart/resume after
+installing the build. Cmd+E's picker is included in the 0.155.0 patch.
 
 ## The Claude Code adapter
 

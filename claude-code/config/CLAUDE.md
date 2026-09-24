@@ -97,6 +97,8 @@ Use `keenable fetch` when you need real page text and `WebFetch` was blocked or 
 
 Source: `~/.local/bin/keenable`.
 
+Never hand me a phone, WhatsApp or bank number taken from a search snippet, a social caption or a third-party directory. Scammers seed real business names next to fake numbers, and search engines index them like anything else. Verify the number on the business's own site or a verified business listing, and check for an official anti-fraud page. If it can't be verified, say so rather than offering a plausible number.
+
 ## Deep research
 
 When I ask for "deep research" / a "research report" / to "deeply research" something:

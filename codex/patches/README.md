@@ -1,68 +1,206 @@
-# Native effort cycling for Codex 0.154.0
+# Codex model and effort shortcuts
 
-`effort-cycle-v0.154.0.patch` adds Alt+Shift+E and Super+Shift+E to the main
-Codex chat surface. Herdr forwards Cmd+Shift+E as Alt+Shift+E.
+`model-effort-v0.155.0.patch` restores Cmd+E (model picker) and Cmd+Shift+E
+(effort cycle) on official `rust-v0.155.0`, commit `f0a1b8f08`.
+The older `effort-cycle-v0.154.0.patch` is retained for that release only.
 
-The shortcut walks the active model's advertised effort levels, including Max
-and Ultra, then wraps to its lowest level. For gpt-6-astra this is
-Low → Medium → High → xHigh → Max → Ultra → Low. Ultra also enables Codex's
-proactive multi-agent behavior. The patch retains Codex's Ultra concurrency
-warning, respects modal input, and changes the current session only. In Plan
-mode it changes the active Plan override. The draft, cursor, model, and saved
-defaults are preserved. Native Alt+, and Alt+. retain their upstream behavior.
+The cycle walks the active model's advertised levels, including Max and Ultra,
+then wraps. It preserves the draft, cursor, model, and saved defaults. Plan
+mode changes its own override. Open popups retain keyboard ownership. Ultra
+retains the upstream warning and behavior; it is not just a display label.
 
-## Build
+Ghostty sends Alt+E for Cmd+E. Herdr's shared router sends Alt+Shift+E for
+Cmd+Shift+E only to a recognized managed executable. Native Super chords and
+legacy ESC E also work. Stock sessions receive Alt+. (increase only, no full
+wrapping); use `/model` to choose advanced levels in those sessions.
 
-Pinned upstream: `rust-v0.154.0`, commit
-`6b9826e3aa83b1a5947db50f4332cb9c65f1b340`, Rust 1.95.0.
+## Why the update broke it
+
+On September 18, 2026, npm upgraded Codex from 0.154.0 to 0.155.0 and replaced
+the native executable link used by the previous installer. The custom key
+handler disappeared, while the router continued sending its key.
+
+The new installer owns `~/.local/bin/codex` and stores complete, version-matched
+native bundles under `~/.local/share/codex-shortcuts/releases/`. npm owns neither
+location. `current` selects the tested release, and a capability manifest lets
+the router recognize its running processes. Missing metadata, an unknown
+executable, or a changed executable falls back to the upstream key. No PID
+migration file or background watcher is needed.
+
+**Tradeoff:** npm can update stock Codex, but the managed launcher stays on its
+last tested release until a new patch is built, tested, and installed. This
+prevents silent shortcut loss; it does not automatically port patches.
+
+## Build and install (macOS)
+
+Set `AI_ENV_REPO` to this repository's absolute path, then:
 
 ```sh
-git clone --depth 1 --branch rust-v0.154.0 https://github.com/openai/codex.git codex-effort
-cd codex-effort
-git apply /path/to/ai-dev-environment/codex/patches/effort-cycle-v0.154.0.patch
+npm install -g @openai/codex@0.155.0
+git clone --depth 1 --branch rust-v0.155.0 https://github.com/openai/codex.git "$HOME/Projects/codex-shortcuts-0.155.0"
+cd "$HOME/Projects/codex-shortcuts-0.155.0"
+git apply --check "$AI_ENV_REPO/codex/patches/model-effort-v0.155.0.patch"
+git apply "$AI_ENV_REPO/codex/patches/model-effort-v0.155.0.patch"
 cd codex-rs
-CARGO_BUILD_JOBS=3 CARGO_PROFILE_RELEASE_LTO=false \
-  CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-  cargo build --release -p codex-cli --bin codex
+export PATH="$HOME/.cargo/bin:$PATH"
+just fmt
+CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_LTO=false \
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_BUILD_JOBS=6 \
+  cargo build --release -p codex-cli
+# Follow the checkout's AGENTS.md, including its TUI suite:
+env -u NO_COLOR CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
+  CARGO_BUILD_JOBS=6 just test -p codex-tui
 ```
 
-The release tag stamps `Cargo.toml` with 0.154.0 but leaves workspace packages
-in `Cargo.lock` at 0.0.0. Cargo updates those local package versions on the first
-build; third-party versions stay pinned. Subsequent builds can use `--locked`.
+Use the checkout's pinned Rust 1.95.0. Release-tag builds normalize workspace
+versions in Cargo.lock; follow upstream's lockfile instructions. The patch
+keeps test snapshots on the development version while the release binary
+reports 0.155.0. It changes no dependencies.
 
-Follow upstream `AGENTS.md` for formatting and tests. The patch includes tests
-for all levels and transport aliases, wrapping, draft/cursor preservation,
-modal handling, key release, a single-level model, and Plan scope.
+Identify the matching platform's `vendor/<target>` directory under the npm
+package (Apple Silicon example below). The installer checks version equality,
+copies the entire helper bundle including `codex-code-mode-host`, signs the
+custom executable, and atomically switches `current`. Do not run it until the
+custom build's tests pass; it cannot establish keyboard behavior from a version
+string alone.
 
-Validation on macOS: all 17 effort-related tests pass. A real PTY verified the
-six-level gpt-6-astra cycle, legacy/Kitty/Super encodings, and draft/cursor
-preservation without submitting a prompt. The broader TUI checks pass 4,317 of
-4,318 tests across the full run and focused reruns, with six additional tests
-skipped. This validation unsets the runner's `NO_COLOR=1` and temporarily aligns
-30 reviewed upstream snapshots to the release version. One upstream inline
-snapshot still has a two-space padding difference caused by replacing version
-0.0.0 with 0.154.0; it is outside the shortcut path. These version adjustments
-are not included in the patch. The Python router and usage collector tests pass.
+```sh
+AI_ENV_CODEX_VENDOR="$(npm root -g)/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin"
+python3 "$AI_ENV_REPO/codex/scripts/install-shortcuts.py" \
+  --binary "$PWD/target/release/codex" --vendor "$AI_ENV_CODEX_VENDOR"
+cp "$AI_ENV_REPO/herdr/shortcuts/"*.py "$HOME/.config/herdr/shortcuts/"
+export PATH="$HOME/.local/bin:$PATH"
+rehash
+python3 "$AI_ENV_REPO/codex/scripts/check-shortcuts.py"
+```
 
-## Install
+Keep `~/.local/bin` before npm in your shell startup configuration, after nvm
+initialization. Existing sessions retain their loaded executable: save drafts,
+exit normally, and run `codex resume` (or `cx resume`) once. Herdr and Ghostty
+need no restart. Do not kill running sessions to install this.
 
-Save the installed native `codex` executable beside itself as
-`codex-stock-0.154.0`, then replace `codex` with the built executable. On macOS,
-ad-hoc sign the replacement with `codesign --force --sign - <path>`.
-For an npm installation, replace the native executable under the platform
-package's `vendor/<target>/bin/` directory; preserve the npm launcher and all
-sibling helper binaries, including `codex-code-mode-host`.
+## Verify and upgrade
 
-Install the shared router from `herdr/shortcuts/`. When upgrading a running
-installation, write the PIDs of its existing stock Codex processes as a JSON
-array to `~/.config/herdr/shortcuts/codex-effort-pending.json`. Those processes
-keep the old Alt+. route until restarted, avoiding a stray E in an old draft.
-The router removes this temporary file once those processes exit.
+```sh
+python3 codex/scripts/check-shortcuts.py
+python3 -B -m unittest discover -s codex/scripts -v
+python3 -B -m unittest discover -s herdr/shortcuts -p test_cycle_effort.py -v
+```
 
-Exit and resume Codex once to activate the native handler. No Herdr or Ghostty
-restart is needed. A Codex update may replace the patch; rebase and rebuild
-against the new release before reinstalling. Roll back by restoring the saved
-native executable and the previous router together.
+The installer regression test simulates npm replacing its binary and verifies
+that the managed command and matching helper still work. Router tests cover
+managed/stock sessions, a replaced executable, missing/corrupt metadata,
+detection failures, and correct pane routing. The health check verifies PATH,
+the selected release, its checksum, and the helper's presence.
 
-This patch implements effort cycling only. Cmd+E's model picker remains a
-separate, unavailable customization; use `/model` in stock Codex.
+For a new Codex release: install stock npm, use a fresh source checkout for the
+same tag, rebase the patch, run formatting and the TUI suite, verify the actual
+terminal cycle, and run the installer with matching helpers. If any check fails,
+leave `current` pointing at the previous working release. Release directories
+are never overwritten, so existing sessions keep their recognized identity.
+
+To inspect/run the npm version without changing the managed launcher:
+
+```sh
+node "$(npm root -g)/@openai/codex/bin/codex.js" --version
+node "$(npm root -g)/@openai/codex/bin/codex.js" resume
+```
+
+## Validation on September 18, 2026
+
+On macOS, the 0.155.0 patch passed all **4,595 TUI tests**, with six upstream
+skips. This includes all six personal-shortcut tests: picker, terminal encodings,
+advanced-level wrapping, modal ownership, single-level models, and Plan scope.
+`just fmt` and `just bazel-lock-update` completed. The installer regression and
+six router tests passed, including under macOS's system Python used by Herdr.
+An isolated PTY using the installed launcher verified High → xHigh → Max →
+Ultra → Low → Medium → High and the model picker, preserving an unsent draft.
+Live process detection selected the custom key for the managed executable and
+the fallback key for the existing stock session. The installed integrity check
+and interactive-shell launcher resolution passed.
+
+## Reduced polling (September 19, 2026)
+
+`polling-v0.155.0.patch` applies after the shortcut patch above. It keeps idle
+waiting in native code so the model runs less often while commands and agents
+are still working:
+
+- Initial shell execution defaults to 30 seconds; an explicit shorter yield
+  remains available for starting a background job or an interactive terminal.
+- Empty `write_stdin` calls for pipe-backed commands wait at least 60 seconds,
+  bounded by `background_terminal_max_timeout`. PTYs retain their five-second
+  minimum and non-empty writes retain their interactive timing.
+- The JavaScript `wait` tool defaults to 60 seconds. Explicit yields and
+  termination remain available.
+- Legacy agent waits default to, and have a minimum of, 60 seconds. The
+  configuration snapshot sets the same minimum/default for multi-agent v2 and
+  a 60-second initial yield for code-mode `exec`, without enabling either
+  feature when it would otherwise be disabled.
+
+These are maximum waits before returning control, not sleeps after completion.
+The existing process-exit, agent-message, completion, and cancellation paths
+remain in use. Progress continues through Codex's existing output events.
+An idle command can still return after the deadline; a timeout does not mean
+success, and does not terminate the process. Interactive terminals retain
+more frequent polling because they may need input.
+
+No Jev calls or credentials are needed for this deterministic path. Semantic
+classification of ambiguous output is not included. It would require a
+separate evaluated classifier and a decision about which log content to send.
+The reported weekly dollar saving has not been verified.
+
+Apply this patch with `git apply --check` and then `git apply`, using the same
+0.155.0 checkout and build/install procedure above. Also merge the two feature
+tables from `codex/config/config.toml` into the local Codex configuration.
+For full Cargo workspace tests, use the repository's Codex-built V8 artifacts.
+The default `v8` crate download URL lacks the requested sandbox-enabled archive.
+`scripts/codex_package/v8.py` downloads the archive and Rust bindings from the
+`openai/codex` release and checks them against the pinned checksum manifest.
+Set both `RUSTY_V8_ARCHIVE` and `RUSTY_V8_SRC_BINDING_PATH` to those verified
+files, as `.github/actions/setup-rusty-v8/action.yml` does. Do not substitute
+the ordinary archive or disable the V8 sandbox. Build `codex-code-mode-host`
+and `test_stdio_server` before running core integration tests in isolation.
+
+On macOS, the complete workspace also needs CMake and GStreamer 1.28 or later
+available through `pkg-config` (`brew install cmake gstreamer`).
+
+Validation on September 20, 2026: the release build, formatting, patch
+application checks, installer regression, and all three polling regression
+cases passed. Across the core run and its targeted retry, 4,260 tests passed,
+with 26 skipped. The remaining credential-snapshot timeout also reproduces
+on the unchanged upstream source in an isolated worktree. The complete
+workspace run finished with 18,359 passed, nine failed, two timed out, and
+50 skipped. Ten failing cases also fail on unchanged upstream: credential
+snapshot discovery, two Seatbelt path checks, two skills-extension snapshots,
+the V8 proof-of-concept sandbox feature check, the app-server warning and
+thread-revert checks, one zsh subcommand-decline check, and the voice decoder.
+The remaining zsh exec-approval-decline case passed when rerun against the
+patched source. No polling regression failed, but the full suite is not green.
+
+The source checkout's `tmp/polling-workspace-tests-cmake.log` records the full
+run. `tmp/polling-baseline-test.log`, `tmp/polling-workspace-baseline.log`, and
+`tmp/polling-workspace-baseline-remaining.log` record upstream comparisons;
+`tmp/polling-workspace-zsh-retry.log` records the passing patched retry.
+The release executable is built. The previous managed release remains selected,
+following the installation gate above; activation requires accepting these
+known upstream/environment failures.
+
+### Rollback
+
+Select the previous managed release with the `current` symlink, and remove
+the `features.code_mode.default_exec_yield_time_ms`,
+`features.multi_agent_v2.min_wait_timeout_ms`, and
+`features.multi_agent_v2.default_wait_timeout_ms` overrides. Restart/resume
+Codex normally; running sessions retain their loaded executable.
+
+## Shortcut rollback
+
+To return to stock, rename `~/.local/bin/codex` to `codex-shortcuts.disabled`,
+run `rehash`, and verify `command -v codex` selects npm. Existing managed sessions
+continue working; new stock sessions get the compatible router fallback.
+Keep the manifest and release directories while those sessions are alive.
+To restore shortcuts, move the launcher back and run the health check.
+
+To select an older managed release, replace the `current` symlink with that
+release directory and run the health check before restarting any session.
+Do not modify release executables in place.

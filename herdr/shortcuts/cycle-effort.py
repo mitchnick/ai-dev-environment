@@ -7,36 +7,39 @@ import os
 from pathlib import Path
 import subprocess
 
-CODEX_PENDING_PATH = Path(__file__).with_name("codex-effort-pending.json")
+CODEX_CAPABILITIES_PATH = Path.home() / ".local/share/codex-shortcuts/capabilities.json"
 
 
-def codex_effort_key(pane_id, herdr, run, pending_path=None):
-    # Installation records pre-patch processes so the new chord cannot type
-    # a stray E into an old session before the user restarts it.
-    pending_path = pending_path or CODEX_PENDING_PATH
+def codex_effort_key(pane_id, herdr, run, capabilities_path=None):
+    """Only send the custom key to an identified, unchanged managed executable."""
+    path = capabilities_path or CODEX_CAPABILITIES_PATH
     try:
-        pending = json.loads(pending_path.read_text())
-    except FileNotFoundError:
-        return "alt+shift+e"
-    if pending:
-        alive = []
-        for pid in pending:
-            try:
-                os.kill(pid, 0)
-                alive.append(pid)
-            except ProcessLookupError:
-                pass
-        if alive:
-            result = run(
-                [herdr, "pane", "process-info", "--pane", pane_id],
-                check=True, capture_output=True, text=True, timeout=5,
-            )
-            processes = json.loads(result.stdout)["result"]["process_info"]["foreground_processes"]
-            if any(process["pid"] in alive for process in processes):
-                return "alt+."
-        else:
-            pending_path.unlink(missing_ok=True)
-    return "alt+shift+e"
+        capabilities = json.loads(path.read_text())
+        if not isinstance(capabilities, dict):
+            return "alt+."
+        result = run(
+            [herdr, "pane", "process-info", "--pane", pane_id],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+        processes = json.loads(result.stdout)["result"]["process_info"]["foreground_processes"]
+        for process in processes:
+            pid = int(process["pid"])
+            if pid <= 0:
+                continue
+            result = run(["/bin/ps", "-p", str(pid), "-o", "comm="],
+                         check=True, capture_output=True, text=True, timeout=5)
+            executable = Path(result.stdout.strip())
+            record = capabilities.get(str(executable))
+            if record:
+                stat = executable.stat()
+                actual = [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns]
+                if actual == record["fingerprint"]:
+                    return "alt+shift+e"
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        pass
+    # Stock, old sessions, missing manifest, and failed detection all use the
+    # upstream increase shortcut. It stops at the upper bound; it cannot wrap.
+    return "alt+."
 
 
 def cycle(pane_id, herdr, run=subprocess.run):

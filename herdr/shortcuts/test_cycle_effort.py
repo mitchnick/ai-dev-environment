@@ -15,12 +15,12 @@ class EffortRoutingTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        pending = patch.object(router, "CODEX_PENDING_PATH", Path(directory.name) / "pending.json")
+        pending = patch.object(router, "CODEX_CAPABILITIES_PATH", Path(directory.name) / "pending.json")
         pending.start()
         self.addCleanup(pending.stop)
 
     def test_native_harnesses_receive_only_the_key_in_the_captured_pane(self):
-        for kind, key in (("pi", "alt+shift+e"), ("codex", "alt+shift+e")):
+        for kind, key in (("pi", "alt+shift+e"), ("codex", "alt+.")):
             with self.subTest(kind=kind):
                 run = Mock(return_value=Mock(returncode=0, stdout=json.dumps({"result": {"agent": {
                     "pane_id": "w1:p9", "agent": kind, "focused": False,
@@ -55,27 +55,37 @@ class EffortRoutingTest(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             router.cycle("w1:p9", "/bin/herdr", run)
 
-    def test_pre_patch_process_keeps_legacy_key_until_restart(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(router.os, "kill"):
-            pending = Path(directory) / "pending.json"
-            pending.write_text("[123]")
-            run = Mock(return_value=Mock(stdout=json.dumps({"result": {"process_info": {
+    def test_managed_process_and_replaced_binary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "codex"
+            executable.write_text("tested executable")
+            stat = executable.stat()
+            manifest = Path(directory) / "capabilities.json"
+            manifest.write_text(json.dumps({str(executable): {"fingerprint": [
+                stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns,
+            ]}}))
+            processes = Mock(stdout=json.dumps({"result": {"process_info": {
                 "foreground_processes": [{"pid": 123}],
-            }}})))
-            self.assertEqual(router.codex_effort_key("w1:p9", "/bin/herdr", run, pending), "alt+.")
-            run.return_value.stdout = json.dumps({"result": {"process_info": {
-                "foreground_processes": [{"pid": 456}],
-            }}})
-            self.assertEqual(router.codex_effort_key("w1:p9", "/bin/herdr", run, pending), "alt+shift+e")
+            }}}))
+            for expected in ("alt+shift+e", "alt+."):
+                run = Mock(side_effect=[processes, Mock(stdout=str(executable) + "\n")])
+                self.assertEqual(router.codex_effort_key("w1:p9", "/bin/herdr", run, manifest), expected)
+                executable.write_text("replaced by a package update")
 
-    def test_restart_guard_removes_itself_after_old_processes_exit(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(router.os, "kill", side_effect=ProcessLookupError):
-            pending = Path(directory) / "pending.json"
-            pending.write_text("[123]")
-            run = Mock()
-            self.assertEqual(router.codex_effort_key("w1:p9", "/bin/herdr", run, pending), "alt+shift+e")
-            self.assertFalse(pending.exists())
-            run.assert_not_called()
+    def test_stock_process_missing_corrupt_manifest_and_detection_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "capabilities.json"
+            self.assertEqual(router.codex_effort_key("p", "herdr", Mock(), manifest), "alt+.")
+            manifest.write_text("not json")
+            self.assertEqual(router.codex_effort_key("p", "herdr", Mock(), manifest), "alt+.")
+            manifest.write_text("{}")
+            run = Mock(side_effect=subprocess.TimeoutExpired("herdr", 5))
+            self.assertEqual(router.codex_effort_key("p", "herdr", run, manifest), "alt+.")
+            run = Mock(side_effect=[
+                Mock(stdout=json.dumps({"result": {"process_info": {"foreground_processes": [{"pid": 123}]}}})),
+                Mock(stdout="/npm/vendor/bin/codex\n"),
+            ])
+            self.assertEqual(router.codex_effort_key("p", "herdr", run, manifest), "alt+.")
 
     def test_lookup_failure_or_mismatched_pane_never_sends_keys(self):
         run = Mock(side_effect=subprocess.CalledProcessError(1, "herdr"))

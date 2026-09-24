@@ -40,7 +40,7 @@ Version anchors from this export:
 | Node | Pi 0.85.1 requires **22.19.0 or newer** |
 | Python | Use Homebrew Python **3.11+** for TOML validation and tests |
 | Pi | `@earendil-works/pi-coding-agent@0.85.1`; do not substitute the older package namespace |
-| Codex | `@openai/codex@0.154.0` for the included native effort patch |
+| Codex | `@openai/codex@0.155.0` for the current managed shortcut patch |
 | Herdr | **0.9.0** is the export's tested base; later versions require compatibility checks |
 | Bun | **1.4.2** is the recorded passing runtime for Pi socket tests; 1.2.13 can hang |
 | Rust | **1.95.0** for the Codex patch; **1.96.1** for Herdr patches |
@@ -174,7 +174,7 @@ The optional footer patch in section 9 assumes the native launcher at `~/.local/
 Use one chosen npm installation so the launchers and native helper binaries stay together. Record `command -v node`, `command -v npm`, and `npm root -g` before installing. On a fresh machine, the Homebrew runtime is the simplest match for Pi's wrapper.
 
 ```sh
-npm install -g @openai/codex@0.154.0
+npm install -g @openai/codex@0.155.0
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.85.1
 codex --version
 pi --version
@@ -295,7 +295,7 @@ put_file "$AI_ENV_REPO/codex/config/themes/claude-nerd.tmTheme" "$HOME/.codex/th
 
 Keep the shared instruction link from section 4. Check that the configured `gpt-6-astra` model is available to the logged-in account. The `features.hooks = true` preference neither installs hooks nor supplies the instruction bridge. Do not claim skill discovery automation is active merely because this preference is enabled.
 
-For a stock installation, `/model` is the model picker; the exported Cmd+E shortcut depends on an unpublished Codex patch. The included effort patch is separate and available in section 9. Section 6 installs a stock-compatible effort route until that patch is actually installed.
+For stock Codex, `/model` is the model picker. Section 9 installs the managed patch for Cmd+E and full Cmd+Shift+E cycling. Section 6 automatically selects a compatible effort key for each session.
 
 ## 6. Install all Herdr runtime dependencies before its config
 
@@ -316,19 +316,12 @@ new_config "$AI_ENV_REPO/herdr/agent-detection/claude.toml" "$HOME/.config/herdr
 
 If any loop failed, resolve it before proceeding. The arranger needs its adjacent library at `~/.local/lib/herdr-arrange`; copying only its launcher will fail.
 
-**Stock Codex guard:** until section 9's effort patch is installed, change the Codex branch in the **installed** `cycle-effort.py` from:
+**Codex compatibility:** the router identifies the foreground executable against
+`~/.local/share/codex-shortcuts/capabilities.json`. Recognized managed builds get
+full cycling; stock or unrecognized sessions get Alt+. (increase only, without
+Max/Ultra wrapping). Missing or unreadable metadata uses that fallback. There is
+no manual router edit or temporary PID list. Install the managed build in section 9.
 
-```python
-command = [herdr, "agent", "send-keys", pane_id, codex_effort_key(pane_id, herdr, run)]
-```
-
-to:
-
-```python
-command = [herdr, "agent", "send-keys", pane_id, "alt+."]
-```
-
-Leave the Claude and Pi branches unchanged. The stock route has upstream's limited cycling behavior; it does not implement full Max/Ultra wrapping. Without this guard, the exported router assumes patched Codex and can send an unsupported key into a draft. If there are mixed stock and patched Codex installations, keep the stock route until they are reconciled.
 
 ### Attention plugin
 
@@ -572,45 +565,21 @@ If the owner wants the footer customization and the native layout is supported, 
 
 ### Codex full effort cycling
 
-This implements Cmd+Shift+E, **not** Cmd+E's unpublished model picker. Use the exact upstream tag and commit:
+Use the [managed shortcut installation](codex/patches/README.md). The current
+patch targets **0.155.0** and restores both Cmd+E and Cmd+Shift+E. Build and test
+against the matching release, then run `codex/scripts/install-shortcuts.py` with
+the tested executable and matching npm vendor directory. The installer copies
+the complete helper bundle outside npm and publishes `~/.local/bin/codex`.
 
-```sh
-rustup toolchain install 1.95.0
-git clone --depth 1 --branch rust-v0.154.0 https://github.com/openai/codex.git "$HOME/Projects/codex-effort-source"
-(
-  set -e
-  cd "$HOME/Projects/codex-effort-source"
-  test "$(git rev-parse HEAD)" = 6b9826e3aa83b1a5947db50f4332cb9c65f1b340
-  git apply --check "$AI_ENV_REPO/codex/patches/effort-cycle-v0.154.0.patch"
-  git apply "$AI_ENV_REPO/codex/patches/effort-cycle-v0.154.0.patch"
-  cd codex-rs
-  CARGO_BUILD_JOBS=3 CARGO_PROFILE_RELEASE_LTO=false \
-    CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-    cargo +1.95.0 build --release -p codex-cli --bin codex
-)
-```
+Keep `~/.local/bin` ahead of npm in PATH. Run
+`python3 "$AI_ENV_REPO/codex/scripts/check-shortcuts.py"` after installation.
+Existing sessions must exit/resume normally to load the handler; save drafts
+first. The router automatically uses the stock shortcut for old sessions.
 
-Read that checkout's `AGENTS.md` and run its required formatting and the patch's effort-related TUI tests before installing. The first build updates release-stamped workspace versions in `Cargo.lock`; subsequent builds can use `--locked`. The existing [patch validation notes](codex/patches/README.md) document an unrelated upstream snapshot mismatch; do not report the whole upstream suite clean if it is not.
-
-Locate the **native** executable used by the chosen npm launcher. Inspect `$(npm root -g)/@openai/codex/bin/codex.js` and its installed platform package; a typical native path is inside `vendor/<target>/bin/codex`. Resolve it for this machine instead of guessing arm64/x64 paths. Do not overwrite the JS launcher or discard sibling binaries such as `codex-code-mode-host`.
-
-Set `AI_ENV_CODEX_NATIVE` to that verified absolute native path, save it beside itself as `codex-stock-0.154.0` if no stock backup exists, and install the tested binary through a new path:
-
-```sh
-test -x "$AI_ENV_CODEX_NATIVE"
-"$AI_ENV_CODEX_NATIVE" --version
-test ! -e "$(dirname "$AI_ENV_CODEX_NATIVE")/codex-stock-0.154.0"
-cp -p "$AI_ENV_CODEX_NATIVE" "$(dirname "$AI_ENV_CODEX_NATIVE")/codex-stock-0.154.0"
-test ! -e "$AI_ENV_CODEX_NATIVE.ai-env-new"
-install -m 755 "$HOME/Projects/codex-effort-source/codex-rs/target/release/codex" "$AI_ENV_CODEX_NATIVE.ai-env-new"
-codesign --force --sign - "$AI_ENV_CODEX_NATIVE.ai-env-new"
-mv -f "$AI_ENV_CODEX_NATIVE.ai-env-new" "$AI_ENV_CODEX_NATIVE"
-codex --version
-```
-
-Preserve an already-existing stock backup and skip its creation rather than overwriting it. Before restoring the exported router, identify all still-running **stock native Codex process PIDs** and write them as a JSON integer array to `~/.config/herdr/shortcuts/codex-effort-pending.json`. Use `[]` only if none exist. That file is the router's temporary compatibility guard; do not include unrelated processes or guess PIDs.
-
-Now `put_file` the original `herdr/shortcuts/cycle-effort.py` over the installed stock-adapted copy. Exit/resume each Codex session normally to activate the patch, saving drafts first. The router keeps pending old processes on Alt+. and removes the pending file when they exit. No Herdr restart is needed. Verify the complete model-advertised cycle and wrapping without submitting the draft. Ultra also changes multi-agent behavior; do not treat it as merely a display label.
+npm upgrades leave the managed build in place. Adopting a new release requires
+rebasing, testing, and installing its patch; see the upgrade and rollback steps
+in the linked guide. Do not replace npm's executable or symlink it to a custom
+binary: that was the cause of the September 18 shortcut regression.
 
 ### Herdr machine headers and pinned usage section
 
@@ -676,7 +645,7 @@ Use the Codex collector **before** the publisher: it updates `~/.pi/agent/openai
 
 For periodic updates, create a private executable runner under `~/.local/bin` that sources `~/.config/ai-dev-environment/shell.zsh`, exports the absolute `HERDR_BIN`, `PI_BIN`, `CODEX_BIN`, `PI_NODE_BIN`, `PI_CLI_PATH`, and `HERDR_SOCKET_PATH`, runs the collector first, then the publisher. Give it an explicit PATH including the selected Node, Homebrew Python/jq, and system tools. A LaunchAgent does not inherit the interactive terminal environment.
 
-Create a user plist under `~/Library/LaunchAgents/` with a unique label, `ProgramArguments` pointing to that runner's absolute path, `StartInterval` 120, and `RunAtLoad` true. Use `plutil -lint`, then `launchctl bootstrap gui/$(id -u) <absolute-plist-path>` and `launchctl kickstart gui/$(id -u)/<label>`. Replace the angle-bracket placeholders first. Record label/path for rollback; do not overwrite an existing job. Verify a scheduled run refreshes the cache and visible tokens. The publisher returns early without a socket or workspace, so exit status alone is insufficient. It publishes on the selected/last local workspace; a patched sidebar can display those tokens once. Stock config displays them in workspace rows.
+Create a user plist under `~/Library/LaunchAgents/` with a unique label, `KeepAlive` true, `RunAtLoad` true, and `ProgramArguments` of `/bin/bash -c 'while true; do <runner>; sleep 120; done'` with the runner's absolute path. Do not use `StartInterval`: macOS can silently stop re-arming it while `launchctl` still reports the job as healthy. With the loop, the job has a live PID, so `launchctl print gui/$(id -u)/<label>` showing a `pid` is a real health check. Use `plutil -lint`, then `launchctl bootstrap gui/$(id -u) <absolute-plist-path>` and `launchctl kickstart gui/$(id -u)/<label>`. Replace the angle-bracket placeholders first. Record label/path for rollback; do not overwrite an existing job. Verify a scheduled run refreshes the cache and visible tokens. The publisher returns early without a socket or workspace, so exit status alone is insufficient. It publishes on the selected/last local workspace; a patched sidebar can display those tokens once. Stock config displays them in workspace rows.
 
 ### Session archiving
 
@@ -761,7 +730,7 @@ Jev instruction section, restoring any files backed up during installation.
 | Deep research workflow | Verify `Workflow` exists and its models/search tools are usable; otherwise keep copied workflow inactive; user confirmation is required before an actual research run |
 | GitKraken marketplace and hooks | Obtain separately or disable the unresolved plugin entry |
 | Telemetry collector on port 1738 | Restore separately or leave the exported telemetry settings removed |
-| Codex Cmd+E picker patch | Unpublished/unavailable here; use `/model`; the effort patch does not supply it |
+| Codex Cmd+E picker patch | Included in the 0.155.0 managed shortcut patch; stock uses `/model` |
 | Usage LaunchAgent, account state | Create locally only if enabling usage; never publish the generated state |
 | Image-provider and compatibility-search keys | Configure privately for selected features, or mark those features inactive |
 | Existing sessions, history, caches, trust decisions, plugin registries | Not restored by this repo; generate new state through the tools |
@@ -818,7 +787,7 @@ pi-update --test-only
 (cd "$AI_ENV_REPO/herdr/extensions/custom/herdr-copy-search" && cargo test --locked)
 ```
 
-The router tests above exercise the repository's patched route, not section 6's deliberate installed stock adaptation. Verify that branch manually against stock Codex in the UI. The notification and usage tests mock external delivery/API behavior; passing them does not prove real banners or live account access. The footer tests do not prove a newly released Claude binary matches its byte patterns.
+The router tests cover managed and stock sessions, replaced binaries, and failed detection. Verify the shortcut in a resumed managed session as well. The notification and usage tests mock external delivery/API behavior; passing them does not prove real banners or live account access. The footer tests do not prove a newly released Claude binary matches its byte patterns.
 
 Create an empty scratch project and run the compatibility smoke test against it:
 
@@ -835,7 +804,7 @@ Use scratch panes and harmless drafts. Record actual observations, not just succ
 
 - [ ] All three harnesses open in Ghostty/Herdr with no unresolved config or extension errors, correct theme, and a usable authenticated model. If a minimal model request is made, it returns successfully; otherwise model execution remains unverified.
 - [ ] Claude statusline displays directory/branch/context/model/effort as applicable; font glyphs are legible. Pi footer and its active-pane cursor work without duplicate cursors when changing focus.
-- [ ] Pi `/model-effort` and Cmd+E open the model/effort picker. Claude Cmd+E opens its picker. Codex `/model` works; its unavailable Cmd+E customization is recorded honestly.
+- [ ] Pi `/model-effort` and Cmd+E open the model/effort picker. Claude Cmd+E opens its picker. Codex `/model` works; Cmd+E also works with the managed patch.
 - [ ] Cmd+Shift+E changes effort exactly once, preserves the current draft/cursor/model, and behaves correctly in each harness. Stock Codex's limited route is distinguished from patched full wrapping. Canceling a picker preserves the draft.
 - [ ] Herdr Cmd+D / Cmd+Shift+D split; Cmd+T creates a tab; Cmd+] / Cmd+[ move focus; rename, tab movement, workspace selection, and agent navigation work. Use [SHORTCUTS.md](SHORTCUTS.md) as the complete shortcut reference. Prefix fallbacks work, especially over SSH where native Cmd chords may not survive.
 - [ ] Pane-mover Cmd+M opens the tab list; Cmd+Shift+M opens the root menu. A scratch pane moves successfully. Main-grid/equalize/editor actions resolve through layout-tools.
@@ -857,7 +826,7 @@ Leave a private setup report containing:
 3. Each section marked **verified**, **installed but unverified**, **inactive by choice**, or **blocked**, with the specific missing prerequisite for any blocker.
 4. Test results and physical UI observations; identify any checks the owner still needs to perform.
 5. Which optional patches are active, their source commits, stock binary backups, and whether upgrades can replace them.
-6. Which excluded features remain unavailable, including hooks/bridge, MCPs, skills, research tools, and Codex's model-picker patch. Do not turn unavailable features into a generic “done.”
+6. Which excluded features remain unavailable, including hooks/bridge, MCPs, skills, and research tools. Do not turn unavailable features into a generic “done.”
 
 Rollback is per component, not a wholesale replacement of HOME:
 
@@ -869,7 +838,7 @@ Rollback is per component, not a wholesale replacement of HOME:
 - For an optional usage job, `launchctl bootout gui/$(id -u)/<label>` using the recorded label, then remove only its own plist/runner. Do not remove other LaunchAgents.
 - Disable archive automation through the environment flags before removing helpers. Preserve existing transcripts and archives; setup rollback is not permission to delete them.
 
-For future upgrades, review changes before copying. Pi's `pi update` wrapper runs cursor regressions before/after; rerun compatibility smoke checks after extension updates. Claude updates may need a newly compatible footer patch. Codex updates may replace its native patch. Herdr updates require reviewing both pinned source patches and the detector override. Relink plugins if this checkout moves and rebuild copy-search if its source changes. Repeat the acceptance checks affected by each upgrade.
+For future upgrades, review changes before copying. Pi's `pi update` wrapper runs cursor regressions before/after; rerun compatibility smoke checks after extension updates. Claude updates may need a newly compatible footer patch. Codex npm updates preserve the managed shortcut build; adopting a new release requires rebasing and testing its patch. Herdr updates require reviewing both pinned source patches and the detector override. Relink plugins if this checkout moves and rebuild copy-search if its source changes. Repeat the acceptance checks affected by each upgrade.
 
 ### Coverage map for future maintainers
 
@@ -882,7 +851,7 @@ Use this table when adding files. Every new runtime file, dependency, or config 
 | `claude-code/custom/shortcuts/` | `~/.local/bin/claude-cycle-effort` | 4, 6 |
 | `claude-code/custom/workflows/` | `~/.claude/workflows/`; runtime availability must be checked | 4, 10 |
 | `codex/config/` | `~/.codex/`, shared instruction link, theme; alias via shell config | 4, 5, 7 |
-| `codex/patches/` | separate pinned source build; optional native executable replacement | 9 |
+| `codex/patches/` | tested source build and managed launcher outside npm | 9 |
 | `ghostty/config/`, `ghostty/helpers/` | `~/.config/ghostty/config`, shell aliases, `~/.local/bin/` | 7 |
 | `herdr/config/`, `herdr/agent-detection/` | `~/.config/herdr/`; activate after plugin installation | 6, 7 |
 | `herdr/helpers/`, `herdr/lib/` | `~/.local/bin/` and `~/.local/lib/herdr-arrange/`; collector optional | 6, 10 |

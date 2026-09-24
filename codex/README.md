@@ -34,12 +34,12 @@ Merge the preferences you want into `~/.codex/config.toml`. Copy the theme to
 of `config/AGENTS.md`, or link `~/.codex/AGENTS.md` to `~/.claude/CLAUDE.md` if
 you use that shared file locally.
 
-This is a preferences snapshot, not a full installation backup. The shared
-`Cmd+Shift+E` shortcut cycles through every supported effort level with the
-included [Codex 0.154.0 patch](patches/README.md). The `Cmd+E` picker needs a
-separate custom build; see the
-[shared shortcut notes](../herdr/shortcuts/README.md). Hook integrations are
-excluded under this repository's sharing policy.
+The shared Cmd+Shift+E shortcut cycles through every supported effort level
+with the [managed Codex 0.155.0 patch](patches/README.md), which also restores
+Cmd+E's model picker. Its launcher and matching helpers live outside npm, so
+package updates cannot overwrite them. New releases require a tested patch
+upgrade. The guide covers installation, verification, upgrades, and rollback.
+Hook integrations are excluded under this repository's sharing policy.
 
 ## Local skills shared with Claude Code
 

@@ -75,3 +75,14 @@ npx ccusage@latest monthly
 npx ccusage@latest --since "$(date +%Y%m01)"
 npx ccusage@latest monthly --since "$(date +%Y%m01)"
 ```
+
+## Codex — Model and effort
+
+```text
+Cmd+E - Open model/effort picker
+Cmd+Shift+E - Cycle supported effort levels, including Max/Ultra, and wrap
+```
+
+Requires the [managed shortcut build](codex/patches/README.md). Restart/resume
+after installation. Stock sessions use increase-only behavior for Cmd+Shift+E.
+The managed build survives npm updates; upgrades are built and tested separately.
