@@ -28,7 +28,8 @@ def atomic_text(path, text, mode=0o644):
         Path(name).unlink(missing_ok=True)
 
 
-def install(binary, vendor, home):
+def install(binary, vendor, home, patch_hash=None):
+    home = home.resolve()
     binary, vendor = binary.resolve(), vendor.resolve()
     version = subprocess.check_output([str(binary), "--version"], text=True).strip()
     stock = vendor / "bin/codex"
@@ -62,18 +63,18 @@ def install(binary, vendor, home):
     native = release / "bin/codex"
     # Never replace a release in place: existing sessions retain their identity.
     manifest[str(native)] = {"fingerprint": fingerprint(native), "version": version,
-                             "sha256": hashlib.sha256(native.read_bytes()).hexdigest()}
+                             "sha256": hashlib.sha256(native.read_bytes()).hexdigest(),
+                             "patch_sha256": patch_hash}
     atomic_text(manifest_path, json.dumps(manifest, indent=2) + "\n")
     link = root / f"current.{os.getpid()}"
     link.symlink_to(release)
     os.replace(link, root / "current")
-    # Resolve current once, so helper paths and executable always use one bundle.
+    # Reconcile with installed npm on every launch, then exec one matching bundle.
+    updater = Path(__file__).resolve().with_name("update-shortcuts.py")
     atomic_text(launcher, "#!/bin/sh\n" + marker + "\n" +
-                "bundle=$(cd " + shlex.quote(str(root / "current")) + " && pwd -P) || exit 1\n" +
-                'export PATH="$bundle/bin:$bundle/codex-path:$PATH"\n' +
-                'exec "$bundle/bin/codex" "$@"\n', 0o755)
+                "exec /usr/bin/python3 " + shlex.quote(str(updater)) + ' "$@"\n', 0o755)
     print(f"Installed {version}: {native}")
-    print("Restart/resume existing sessions. npm updates do not replace this build.")
+    print("Restart/resume existing sessions. Future npm upgrades rebuild and test the customizations on launch.")
 
 
 if __name__ == "__main__":

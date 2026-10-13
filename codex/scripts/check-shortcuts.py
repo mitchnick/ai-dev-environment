@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify the managed launcher, binary integrity, and matching helper bundle."""
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import shutil
@@ -18,7 +19,14 @@ try:
     assert (binary.parent / "codex-code-mode-host").is_file(), "Missing code-mode helper"
     launcher = Path.home() / ".local/bin/codex"
     assert Path(shutil.which("codex") or "") == launcher, "PATH selects another Codex; put ~/.local/bin before npm"
-    assert subprocess.check_output([str(launcher), "--version"], text=True).strip() == record["version"], "Launcher version mismatch"
+    assert subprocess.check_output([str(binary), "--version"], text=True).strip() == record["version"], "Binary version mismatch"
+    spec = importlib.util.spec_from_file_location("updater", Path(__file__).with_name("update-shortcuts.py"))
+    updater = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(updater)
+    version, _vendor = updater.installed_package()
+    patch_hash = hashlib.sha256(updater.PATCH.read_bytes()).hexdigest()
+    assert updater.current_release(root, version, patch_hash) == binary, "npm or patch changed; launch codex to rebuild"
+    assert "update-shortcuts.py" in launcher.read_text(), "Launcher does not check for upgrades"
     print(f'OK: {record["version"]}; managed model/effort shortcuts')
     print(binary)
 except (OSError, KeyError, ValueError, AssertionError) as error:

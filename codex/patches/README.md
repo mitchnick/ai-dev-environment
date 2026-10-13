@@ -1,5 +1,76 @@
 # Codex model and effort shortcuts
 
+## Upgrades with customizations
+
+The managed launcher follows the installed npm Codex version. It uses
+`model-effort.patch` (ported to 0.162.1) to preserve Cmd+E's model picker and
+Cmd+Shift+E's full effort cycle, including Max/Ultra and wrapping. Configuration,
+themes, hooks, skills, and saved sessions stay in the normal Codex home.
+
+Install or upgrade from this repository:
+
+```sh
+python3 codex/scripts/update-shortcuts.py update
+```
+
+After installation, use `codex update`, or upgrade npm normally and launch
+`codex`/`cx`. The launcher detects a version mismatch, fetches that exact official
+release, checks and applies the patch, builds the CLI, runs the TUI suite, and
+activates it with matching helpers. The first build for a release takes several
+minutes. Rust/Cargo (including cargo-nextest), `just`, git, npm, and the macOS
+build tools must be installed. The source release chooses its Rust toolchain.
+
+The launcher references this repository's updater; keep the checkout available.
+It records the owning npm executable in the machine-local `npm.json` beside the
+managed releases, so a project's nvm/Homebrew PATH change cannot select another
+installation. Update that path if moving the owning Node installation.
+Keep `~/.local/bin` ahead of npm in the interactive shell's PATH. Existing
+sessions retain their executable and can exit/resume normally to pick up the
+new version. No running session is killed or overwritten.
+
+Each launch compares npm, the installed customization fingerprint, and the patch
+hash. Once they match, launching does no network access or compilation. A lock
+prevents concurrent launches from building simultaneously. Build dependencies
+are cached in `~/.local/share/codex-shortcuts/target`; source attempts are retained
+under `builds/` for diagnosis. The capability manifest keeps the shortcut router
+working for both existing and upgraded sessions.
+
+For globally configured MCP servers whose tokens normally come from a project's
+dotenv file, `~/.codex/launcher-env.json` can map selected environment-variable
+names to absolute source file paths. The launcher reads only those literal
+assignments; it never sources the file or executes shell code, and inherited
+values take precedence. Keep this machine-local file and all credentials out of
+the repository.
+
+If upstream changes incompatibly, patching, compilation, or tests stop the
+upgrade with an explicit error. The previous build remains recoverable at
+`~/.local/share/codex-shortcuts/current/bin/codex`; it is not silently selected as
+though the upgrade succeeded. Fix the reported incompatibility and relaunch.
+No source patch can guarantee compatibility with arbitrary future upstream code.
+
+The patch also makes release-tag snapshot versions deterministic in tests and
+keeps the analytics fixture's embedded-server bootstrap on its mock HTTP server.
+These are test-harness repairs, not production behavior changes or test exclusions.
+The shipped CLI is optimized; the full TUI suite uses upstream's normal debug
+test profile because several command snapshots intentionally differ in release mode.
+
+Checks:
+
+```sh
+python3 -B -m unittest discover -s codex/scripts -v
+python3 codex/scripts/check-shortcuts.py
+codex --version
+```
+
+The polling source patch below was a separate, unactivated experiment. Automatic
+upgrades carry the installed shortcut customization and preserve existing config;
+they do not activate that historical experiment.
+
+## Historical manual workflow (superseded)
+
+The following records the previous 0.155.0 setup and its validation. Its manual
+version pin and installation commands are superseded by the updater above.
+
 `model-effort-v0.155.0.patch` restores Cmd+E (model picker) and Cmd+Shift+E
 (effort cycle) on official `rust-v0.155.0`, commit `f0a1b8f08`.
 The older `effort-cycle-v0.154.0.patch` is retained for that release only.

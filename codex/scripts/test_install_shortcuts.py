@@ -37,7 +37,8 @@ class InstallTest(unittest.TestCase):
                 # Simulate npm replacing the entire native executable.
                 stock.write_text('#!/bin/sh\necho "codex-cli 2.0"\n')
                 launcher = home / ".local/bin/codex"
-                self.assertEqual(subprocess.check_output([str(launcher), "resume", "two words"], text=True), "resume\ntwo words\n")
+                self.assertIn("update-shortcuts.py", launcher.read_text())
+                self.assertEqual(subprocess.check_output([str(current / "bin/codex"), "resume", "two words"], text=True), "resume\ntwo words\n")
                 self.assertEqual((current / "bin/codex-code-mode-host").read_text(), "matching helper")
                 with self.assertRaises(ValueError):
                     installer.install(binary, vendor, home)

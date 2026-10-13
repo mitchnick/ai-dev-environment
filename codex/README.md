@@ -35,10 +35,12 @@ of `config/AGENTS.md`, or link `~/.codex/AGENTS.md` to `~/.claude/CLAUDE.md` if
 you use that shared file locally.
 
 The shared Cmd+Shift+E shortcut cycles through every supported effort level
-with the [managed Codex 0.155.0 patch](patches/README.md), which also restores
-Cmd+E's model picker. Its launcher and matching helpers live outside npm, so
-package updates cannot overwrite them. New releases require a tested patch
-upgrade. The guide covers installation, verification, upgrades, and rollback.
+with the [managed shortcut patch](patches/README.md), which also restores
+Cmd+E's model picker. The launcher follows the installed npm version: after an
+upgrade it applies the patch, builds, runs the TUI tests, and activates matching
+helpers before starting Codex. `codex update` upgrades npm and does the same
+verification. Compatible upgrades need no manual patch reinstall. An incompatible
+patch or failed test produces an explicit error and preserves the previous build.
 Hook integrations are excluded under this repository's sharing policy.
 
 ## Local skills shared with Claude Code

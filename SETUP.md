@@ -40,7 +40,7 @@ Version anchors from this export:
 | Node | Pi 0.85.1 requires **22.19.0 or newer** |
 | Python | Use Homebrew Python **3.11+** for TOML validation and tests |
 | Pi | `@earendil-works/pi-coding-agent@0.85.1`; do not substitute the older package namespace |
-| Codex | `@openai/codex@0.155.0` for the current managed shortcut patch |
+| Codex | `@openai/codex@latest`; managed customization port tested on 0.162.1 |
 | Herdr | **0.9.0** is the export's tested base; later versions require compatibility checks |
 | Bun | **1.4.2** is the recorded passing runtime for Pi socket tests; 1.2.13 can hang |
 | Rust | **1.95.0** for the Codex patch; **1.96.1** for Herdr patches |
@@ -174,7 +174,7 @@ The optional footer patch in section 9 assumes the native launcher at `~/.local/
 Use one chosen npm installation so the launchers and native helper binaries stay together. Record `command -v node`, `command -v npm`, and `npm root -g` before installing. On a fresh machine, the Homebrew runtime is the simplest match for Pi's wrapper.
 
 ```sh
-npm install -g @openai/codex@0.155.0
+npm install -g @openai/codex@latest
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.85.1
 codex --version
 pi --version
@@ -565,19 +565,19 @@ If the owner wants the footer customization and the native layout is supported, 
 
 ### Codex full effort cycling
 
-Use the [managed shortcut installation](codex/patches/README.md). The current
-patch targets **0.155.0** and restores both Cmd+E and Cmd+Shift+E. Build and test
-against the matching release, then run `codex/scripts/install-shortcuts.py` with
-the tested executable and matching npm vendor directory. The installer copies
-the complete helper bundle outside npm and publishes `~/.local/bin/codex`.
+Use the [managed shortcut installation](codex/patches/README.md). Run
+`python3 codex/scripts/update-shortcuts.py update` from this repository to
+upgrade npm, apply the shortcut patch, test it, and install the matching build
+and helpers. The launcher checks the installed npm version on every start, so
+later npm upgrades automatically rebuild and validate the customizations.
 
 Keep `~/.local/bin` ahead of npm in PATH. Run
 `python3 "$AI_ENV_REPO/codex/scripts/check-shortcuts.py"` after installation.
 Existing sessions must exit/resume normally to load the handler; save drafts
 first. The router automatically uses the stock shortcut for old sessions.
 
-npm upgrades leave the managed build in place. Adopting a new release requires
-rebasing, testing, and installing its patch; see the upgrade and rollback steps
+npm upgrades are adopted automatically after the patch and tests pass. A failed
+build reports an error and preserves the previous release; see the recovery steps
 in the linked guide. Do not replace npm's executable or symlink it to a custom
 binary: that was the cause of the September 18 shortcut regression.
 
@@ -730,7 +730,7 @@ Jev instruction section, restoring any files backed up during installation.
 | Deep research workflow | Verify `Workflow` exists and its models/search tools are usable; otherwise keep copied workflow inactive; user confirmation is required before an actual research run |
 | GitKraken marketplace and hooks | Obtain separately or disable the unresolved plugin entry |
 | Telemetry collector on port 1738 | Restore separately or leave the exported telemetry settings removed |
-| Codex Cmd+E picker patch | Included in the 0.155.0 managed shortcut patch; stock uses `/model` |
+| Codex Cmd+E picker patch | Included in the managed upgrade-tested shortcut patch; stock uses `/model` |
 | Usage LaunchAgent, account state | Create locally only if enabling usage; never publish the generated state |
 | Image-provider and compatibility-search keys | Configure privately for selected features, or mark those features inactive |
 | Existing sessions, history, caches, trust decisions, plugin registries | Not restored by this repo; generate new state through the tools |
@@ -838,7 +838,7 @@ Rollback is per component, not a wholesale replacement of HOME:
 - For an optional usage job, `launchctl bootout gui/$(id -u)/<label>` using the recorded label, then remove only its own plist/runner. Do not remove other LaunchAgents.
 - Disable archive automation through the environment flags before removing helpers. Preserve existing transcripts and archives; setup rollback is not permission to delete them.
 
-For future upgrades, review changes before copying. Pi's `pi update` wrapper runs cursor regressions before/after; rerun compatibility smoke checks after extension updates. Claude updates may need a newly compatible footer patch. Codex npm updates preserve the managed shortcut build; adopting a new release requires rebasing and testing its patch. Herdr updates require reviewing both pinned source patches and the detector override. Relink plugins if this checkout moves and rebuild copy-search if its source changes. Repeat the acceptance checks affected by each upgrade.
+For future upgrades, review changes before copying. Pi's `pi update` wrapper runs cursor regressions before/after; rerun compatibility smoke checks after extension updates. Claude updates may need a newly compatible footer patch. Codex's launcher automatically rebuilds and tests its customizations when npm changes; patch incompatibilities are reported explicitly. Herdr updates require reviewing both pinned source patches and the detector override. Relink plugins if this checkout moves and rebuild copy-search if its source changes. Repeat the acceptance checks affected by each upgrade.
 
 ### Coverage map for future maintainers
 
