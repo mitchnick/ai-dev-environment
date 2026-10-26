@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Follow installed npm Codex upgrades while preserving tested personal shortcuts."""
-import fcntl
+"""Launch the tested customized Codex for npm's installed version, or stock Codex until it is rebuilt."""
+import functools
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,10 +11,10 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 
 SCRIPTS = Path(__file__).resolve().parent
 PATCH = SCRIPTS.parent / "patches/model-effort.patch"
+SKILL = "rebuild-codex-shortcuts"
 
 
 def run(args, cwd=None, env=None):
@@ -33,10 +32,15 @@ def npm_installation():
     return npm, env
 
 
-def installed_package():
+@functools.lru_cache(maxsize=None)
+def npm_package():
     npm, env = npm_installation()
     root = subprocess.check_output([npm, "root", "-g"], text=True, env=env).strip()
-    package = Path(root) / "@openai/codex"
+    return Path(root) / "@openai/codex"
+
+
+def installed_package():
+    package = npm_package()
     version = json.loads((package / "package.json").read_text())["version"]
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?", version):
         raise RuntimeError(f"Unsupported npm Codex version: {version!r}")
@@ -55,9 +59,10 @@ def current_release(root, version, patch_hash):
         binary = (root / "current/bin/codex").resolve(strict=True)
         record = json.loads((root / "capabilities.json").read_text())[str(binary)]
         stat = binary.stat()
+        # Older records lead with st_dev, which macOS renumbers at boot; compare the rest.
         if (record["version"] == f"codex-cli {version}"
                 and record.get("patch_sha256") == patch_hash
-                and record["fingerprint"] == [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns]
+                and record["fingerprint"][-3:] == [stat.st_ino, stat.st_size, stat.st_mtime_ns]
                 and (binary.parent / "codex-code-mode-host").is_file()):
             return binary
     except (OSError, KeyError, ValueError, TypeError):
@@ -65,81 +70,15 @@ def current_release(root, version, patch_hash):
     return None
 
 
-def build(version, vendor, root, patch_hash, home):
-    # Keep failed attempts for diagnosis. Never reset a person's source checkout.
-    attempts = root / "builds"
-    attempts.mkdir(exist_ok=True)
-    attempt = Path(tempfile.mkdtemp(prefix=f"{version}-", dir=attempts))
-    source = attempt / "source"
-    patch = attempt / "customizations.patch"
-    shutil.copyfile(PATCH, patch)
-    if hashlib.sha256(patch.read_bytes()).hexdigest() != patch_hash:
-        raise RuntimeError("Customizations changed before the build; rerun codex")
-    run(["git", "clone", "--depth", "1", "--branch", f"rust-v{version}",
-         "https://github.com/openai/codex.git", source])
-    run(["git", "apply", "--check", patch], cwd=source)
-    run(["git", "apply", patch], cwd=source)
-    # Snapshot helpers before the long build so concurrent npm updates cannot mix versions.
-    helpers = attempt / "vendor"
-    shutil.copytree(vendor, helpers)
-    env = os.environ.copy()
-    env.pop("NO_COLOR", None)
-    env.update({
-        "PATH": str(home / ".cargo/bin") + os.pathsep + env.get("PATH", ""),
-        "CARGO_TARGET_DIR": str(root / "target"),
-        "CARGO_BUILD_JOBS": "6",
-        "CARGO_PROFILE_RELEASE_DEBUG": "0",
-        "CARGO_PROFILE_RELEASE_LTO": "false",
-        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "16",
-        "CARGO_PROFILE_DEV_DEBUG": "0",
-        "CARGO_PROFILE_TEST_DEBUG": "0",
-    })
-    for command in ("cargo", "just"):
-        if not shutil.which(command, path=env["PATH"]):
-            raise RuntimeError(f"Missing build prerequisite: {command}")
-    rust = source / "codex-rs"
-    run(["cargo", "fmt", "-p", "codex-tui", "--", "--config", "imports_granularity=Item"], cwd=rust, env=env)
-    # Ship an optimized CLI; upstream TUI snapshots assume debug-mode commands.
-    run(["cargo", "build", "--release", "-p", "codex-cli"], cwd=rust, env=env)
-    run(["cargo", "build", "-p", "codex-cli"], cwd=rust, env=env)
-    run(["just", "test", "-p", "codex-tui", "--status-level", "fail"], cwd=source, env=env)
-    binary = root / "target/release/codex"
-    if installed_package()[0] != version:
-        raise RuntimeError("npm changed again during the build; rerun codex to build that version")
-    if hashlib.sha256(PATCH.read_bytes()).hexdigest() != patch_hash:
-        raise RuntimeError("Customizations changed during the build; rerun codex")
-    spec = importlib.util.spec_from_file_location("installer", SCRIPTS / "install-shortcuts.py")
-    installer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(installer)
-    installer.atomic_text(root / "npm.json", json.dumps({"npm": npm_installation()[0]}) + "\n")
-    installer.install(binary, helpers, home, patch_hash=patch_hash)
-
-
-def ensure(home):
-    home = home.resolve()
-    root = home / ".local/share/codex-shortcuts"
-    root.mkdir(parents=True, exist_ok=True)
-    patch_hash = hashlib.sha256(PATCH.read_bytes()).hexdigest()
-    version, vendor = installed_package()
-    binary = current_release(root, version, patch_hash)
-    if binary:
-        return binary
-    print(f"[codex customizations] Preparing Codex {version} with your shortcuts. "
-          "The first build for a release can take several minutes.", file=sys.stderr, flush=True)
-    with (root / "update.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print("[codex customizations] Waiting for another customization build...", file=sys.stderr)
-            fcntl.flock(lock, fcntl.LOCK_EX)
-        version, vendor = installed_package()
-        binary = current_release(root, version, patch_hash)
-        if not binary:
-            build(version, vendor, root, patch_hash, home)
-            binary = current_release(root, version, patch_hash)
-        if not binary:
-            raise RuntimeError("Build completed without a verified customized release")
-        return binary
+def select(home):
+    """Return the tested customized executable for npm's version, or None to start stock Codex."""
+    root = home.resolve() / ".local/share/codex-shortcuts"
+    version, _vendor = installed_package()
+    binary = current_release(root, version, hashlib.sha256(PATCH.read_bytes()).hexdigest())
+    if not binary:
+        print(f"[codex customizations] Codex {version} is running stock, without your shortcuts. "
+              f"To rebuild them, ask an agent to run the {SKILL} skill.", file=sys.stderr, flush=True)
+    return binary
 
 
 def launcher_environment(home):
@@ -164,18 +103,25 @@ def launcher_environment(home):
     return env
 
 
-def launch(binary, args):
-    bundle = binary.parent.parent
-    env = launcher_environment(Path.home())
+def launch(binary, args, home=None):
+    home = home or Path.home()
+    env = launcher_environment(home)
     # An existing Codex session may have prepended its old bundle to PATH.
-    releases = bundle.parent
+    releases = home / ".local/share/codex-shortcuts/releases"
     paths = [entry for entry in env.get("PATH", "").split(os.pathsep)
              if not Path(entry).is_relative_to(releases)]
-    launcher_dir = releases.parent.parent.parent / "bin"
-    env["PATH"] = os.pathsep.join([str(launcher_dir), str(bundle / "bin"),
-                                   str(bundle / "codex-path"), *paths])
-    env["CODEX_MANAGED_BY_NPM"] = "1"
-    os.execve(binary, [str(binary), *args], env)
+    if binary is None:
+        # npm's own entry point chooses the stock executable and its environment.
+        executable = Path(npm_installation()[0]).with_name("node")
+        argv = [str(executable), str(npm_package() / "bin/codex.js"), *args]
+        env["PATH"] = os.pathsep.join([str(home / ".local/bin"), *paths])
+    else:
+        bundle = binary.parent.parent
+        executable, argv = binary, [str(binary), *args]
+        env["PATH"] = os.pathsep.join([str(home / ".local/bin"), str(bundle / "bin"),
+                                       str(bundle / "codex-path"), *paths])
+        env["CODEX_MANAGED_BY_NPM"] = "1"
+    os.execve(executable, argv, env)
 
 
 def main():
@@ -184,17 +130,13 @@ def main():
         if args == ["update"]:
             npm, env = npm_installation()
             run([npm, "install", "-g", "@openai/codex@latest"], env=env)
-        binary = ensure(Path.home())
-        if args == ["update"]:
-            print(subprocess.check_output([str(binary), "--version"], text=True).strip())
-            print("Customizations verified. Restart/resume existing sessions to use this release.")
+            binary = select(Path.home())
+            print(subprocess.check_output([str(binary), "--version"], text=True).strip() + " with your shortcuts"
+                  if binary else f"Codex {installed_package()[0]} installed; it runs stock until rebuilt.")
         else:
-            launch(binary, args)
+            launch(select(Path.home()), args)
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
-        print(f"[codex customizations] Upgrade failed: {error}", file=sys.stderr)
-        print("The previous customized release is preserved at "
-              "~/.local/share/codex-shortcuts/current/bin/codex. "
-              "Resolve the reported failure and rerun codex; no stock fallback was activated.", file=sys.stderr)
+        print(f"[codex customizations] Launch failed: {error}", file=sys.stderr)
         return 1
     return 0
 

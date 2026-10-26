@@ -1,9 +1,9 @@
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -27,18 +27,19 @@ class UpdateTest(unittest.TestCase):
         self.patch_mock.start()
         self.addCleanup(self.patch_mock.stop)
 
-    def install_fake(self, version, patch_hash=None):
+    def install_fake(self, version, patch_hash=None, device=None):
         binary = self.root / "releases" / version / "bin/codex"
         binary.parent.mkdir(parents=True)
         binary.write_text("verified customized binary")
         binary.with_name("codex-code-mode-host").write_text("matching helper")
         stat = binary.stat()
+        fingerprint = [stat.st_ino, stat.st_size, stat.st_mtime_ns]
         manifest_path = self.root / "capabilities.json"
         manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
         manifest[str(binary)] = {
             "version": f"codex-cli {version}",
             "patch_sha256": patch_hash or self.patch_hash,
-            "fingerprint": [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns],
+            "fingerprint": fingerprint if device is None else [device, *fingerprint],
         }
         manifest_path.write_text(json.dumps(manifest))
         current = self.root / "current"
@@ -46,31 +47,26 @@ class UpdateTest(unittest.TestCase):
         current.symlink_to(binary.parent.parent)
         return binary
 
-    def test_current_version_starts_without_build_or_network(self):
+    def test_current_version_starts_customized_without_network(self):
         binary = self.install_fake("1.0.0")
-        with patch.object(updater, "installed_package", return_value=("1.0.0", self.home)), \
-                patch.object(updater, "build") as build:
-            self.assertEqual(updater.ensure(self.home), binary)
-            build.assert_not_called()
+        with patch.object(updater, "installed_package", return_value=("1.0.0", self.home)):
+            self.assertEqual(updater.select(self.home), binary)
 
-    def test_npm_upgrade_builds_and_selects_matching_custom_release(self):
-        previous = self.install_fake("1.0.0")
-        def build(version, vendor, root, patch_hash, home):
-            self.assertEqual((self.root / "current/bin/codex").resolve(), previous)
-            self.install_fake(version, patch_hash)
-        with patch.object(updater, "installed_package", return_value=("1.1.0", self.home)), \
-                patch.object(updater, "build", side_effect=build) as build_mock:
-            binary = updater.ensure(self.home)
-            self.assertEqual(binary.parent.parent.name, "1.1.0")
-            build_mock.assert_called_once()
-        self.assertTrue(previous.exists())
+    def test_record_from_before_a_reboot_starts_customized(self):
+        # Older records hold the device number, which macOS renumbers at boot.
+        binary = self.install_fake("1.0.0", device=16777229)
+        with patch.object(updater, "installed_package", return_value=("1.0.0", self.home)):
+            self.assertEqual(updater.select(self.home), binary)
 
-    def test_failed_upgrade_preserves_previous_without_silent_fallback(self):
+    def test_npm_upgrade_starts_stock_at_once_and_names_the_rebuild_skill(self):
         previous = self.install_fake("1.0.0")
         with patch.object(updater, "installed_package", return_value=("1.1.0", self.home)), \
-                patch.object(updater, "build", side_effect=RuntimeError("patch incompatible")):
-            with self.assertRaisesRegex(RuntimeError, "patch incompatible"):
-                updater.ensure(self.home)
+                patch.object(updater.subprocess, "run") as subprocess_run, \
+                patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.assertIsNone(updater.select(self.home))
+        subprocess_run.assert_not_called()
+        self.assertIn("Codex 1.1.0 is running stock", stderr.getvalue())
+        self.assertIn(updater.SKILL, stderr.getvalue())
         self.assertEqual((self.root / "current/bin/codex").resolve(), previous)
 
     def test_patch_change_and_modified_binary_require_validation(self):
@@ -80,22 +76,12 @@ class UpdateTest(unittest.TestCase):
         binary.write_text("unexpected modification")
         self.assertIsNone(updater.current_release(self.root, "1.0.0", "old patch"))
 
-    def test_second_launcher_rechecks_after_acquiring_build_lock(self):
-        previous = self.install_fake("1.0.0")
-        newer = self.root / "releases/1.1.0/bin/codex"
-        with patch.object(updater, "installed_package", return_value=("1.1.0", self.home)), \
-                patch.object(updater, "current_release", side_effect=[None, newer]), \
-                patch.object(updater, "build") as build:
-            self.assertEqual(updater.ensure(self.home), newer)
-            build.assert_not_called()
-        self.assertTrue(previous.exists())
-
     def test_launch_preserves_arguments_and_removes_old_helper_path(self):
         binary = self.install_fake("1.1.0")
         old_path = str(self.root / "releases/1.0.0/bin")
         with patch.object(updater, "launcher_environment", return_value={"PATH": old_path + ":/usr/bin"}), \
                 patch.object(updater.os, "execve") as execute:
-            updater.launch(binary, ["resume", "two words"])
+            updater.launch(binary, ["resume", "two words"], self.home)
         executable, args, env = execute.call_args.args
         self.assertEqual(executable, binary)
         self.assertEqual(args, [str(binary), "resume", "two words"])
@@ -103,6 +89,21 @@ class UpdateTest(unittest.TestCase):
             str(self.home / ".local/bin"), str(binary.parent),
             str(binary.parent.parent / "codex-path"), "/usr/bin"])
         self.assertEqual(env["CODEX_MANAGED_BY_NPM"], "1")
+
+    def test_stock_launch_runs_npm_entry_point_without_managed_paths(self):
+        old_path = str(self.root / "releases/1.0.0/bin")
+        npm = self.home / "node/bin/npm"
+        package = self.home / "node/lib/node_modules/@openai/codex"
+        with patch.object(updater, "launcher_environment", return_value={"PATH": old_path + ":/usr/bin"}), \
+                patch.object(updater, "npm_installation", return_value=(str(npm), {})), \
+                patch.object(updater, "npm_package", return_value=package), \
+                patch.object(updater.os, "execve") as execute:
+            updater.launch(None, ["resume", "two words"], self.home)
+        executable, args, env = execute.call_args.args
+        self.assertEqual(executable, npm.with_name("node"))
+        self.assertEqual(args, [str(npm.with_name("node")), str(package / "bin/codex.js"), "resume", "two words"])
+        self.assertEqual(env["PATH"].split(":"), [str(self.home / ".local/bin"), "/usr/bin"])
+        self.assertNotIn("CODEX_MANAGED_BY_NPM", env)
 
     def test_environment_imports_only_selected_value_without_executing_source(self):
         config = self.home / ".codex"
@@ -123,19 +124,6 @@ class UpdateTest(unittest.TestCase):
             executable, env = updater.npm_installation()
         self.assertEqual(executable, str(npm))
         self.assertEqual(env["PATH"].split(":")[0], str(npm.parent))
-
-    def test_failed_tests_never_call_installer(self):
-        vendor = self.home / "vendor"
-        vendor.mkdir()
-        def run(args, cwd=None, env=None):
-            if args[:2] == ["just", "test"]:
-                raise subprocess.CalledProcessError(1, args)
-        with patch.object(updater, "run", side_effect=run), \
-                patch.object(updater.shutil, "which", return_value="/fake/tool"), \
-                patch.object(updater.importlib.util, "spec_from_file_location") as installer:
-            with self.assertRaises(subprocess.CalledProcessError):
-                updater.build("1.1.0", vendor, self.root, self.patch_hash, self.home)
-            installer.assert_not_called()
 
 
 if __name__ == "__main__":

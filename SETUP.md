@@ -565,20 +565,30 @@ If the owner wants the footer customization and the native layout is supported, 
 
 ### Codex full effort cycling
 
-Use the [managed shortcut installation](codex/patches/README.md). Run
-`python3 codex/scripts/update-shortcuts.py update` from this repository to
-upgrade npm, apply the shortcut patch, test it, and install the matching build
-and helpers. The launcher checks the installed npm version on every start, so
-later npm upgrades automatically rebuild and validate the customizations.
+Use the [managed shortcut installation](codex/patches/README.md). Link the
+rebuild skill for Claude Code and Codex, keeping an existing destination:
+
+```sh
+ln -s "$AI_ENV_REPO/codex/skills/rebuild-codex-shortcuts" "$HOME/.claude/skills/rebuild-codex-shortcuts"
+ln -s "$HOME/.claude/skills/rebuild-codex-shortcuts" "$HOME/.agents/skills/rebuild-codex-shortcuts"
+```
+
+Then ask an agent to run the `rebuild-codex-shortcuts` skill. It applies the
+shortcut patch to the installed npm version, builds it, and gates it on the
+shortcut, TUI, launcher and router tests. It then installs the build, its
+helpers and the `~/.local/bin/codex` launcher. The launcher checks the installed
+npm version on every start and never builds. After an npm upgrade it starts
+stock Codex at once and names the skill; run the skill again to bring the
+shortcuts to the new version.
 
 Keep `~/.local/bin` ahead of npm in PATH. Run
 `python3 "$AI_ENV_REPO/codex/scripts/check-shortcuts.py"` after installation.
 Existing sessions must exit/resume normally to load the handler; save drafts
 first. The router automatically uses the stock shortcut for old sessions.
 
-npm upgrades are adopted automatically after the patch and tests pass. A failed
-build reports an error and preserves the previous release; see the recovery steps
-in the linked guide. Do not replace npm's executable or symlink it to a custom
+A failed rebuild reports an error, leaves stock Codex running and keeps the
+previous release; see the recovery steps in the linked guide. Do not replace
+npm's executable or symlink it to a custom
 binary: that was the cause of the September 18 shortcut regression.
 
 ### Herdr machine headers and pinned usage section

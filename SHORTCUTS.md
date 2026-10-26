@@ -85,5 +85,6 @@ Cmd+Shift+E - Cycle supported effort levels, including Max/Ultra, and wrap
 
 Requires the [managed shortcut build](codex/patches/README.md). Restart/resume
 after installation. Stock sessions use increase-only behavior for Cmd+Shift+E.
-After npm upgrades, the launcher rebuilds and tests the customizations before
-starting the new version. `codex update` performs the upgrade and verification.
+After an npm upgrade (`codex update`), the launcher starts the new version stock
+at once; the `rebuild-codex-shortcuts` skill rebuilds and tests the
+customizations for it.

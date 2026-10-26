@@ -14,7 +14,7 @@ try:
     manifest = json.loads((root / "capabilities.json").read_text())
     record = manifest[str(binary)]
     stat = binary.stat()
-    assert record["fingerprint"] == [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns], "Binary changed since installation"
+    assert record["fingerprint"][-3:] == [stat.st_ino, stat.st_size, stat.st_mtime_ns], "Binary changed since installation"
     assert hashlib.sha256(binary.read_bytes()).hexdigest() == record["sha256"], "Binary checksum mismatch"
     assert (binary.parent / "codex-code-mode-host").is_file(), "Missing code-mode helper"
     launcher = Path.home() / ".local/bin/codex"
@@ -25,7 +25,7 @@ try:
     spec.loader.exec_module(updater)
     version, _vendor = updater.installed_package()
     patch_hash = hashlib.sha256(updater.PATCH.read_bytes()).hexdigest()
-    assert updater.current_release(root, version, patch_hash) == binary, "npm or patch changed; launch codex to rebuild"
+    assert updater.current_release(root, version, patch_hash) == binary, "npm or patch changed; codex runs stock until the rebuild-codex-shortcuts skill rebuilds it"
     assert "update-shortcuts.py" in launcher.read_text(), "Launcher does not check for upgrades"
     print(f'OK: {record["version"]}; managed model/effort shortcuts')
     print(binary)

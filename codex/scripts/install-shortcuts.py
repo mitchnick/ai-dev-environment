@@ -12,8 +12,9 @@ import tempfile
 
 
 def fingerprint(path):
+    # No st_dev: macOS renumbers volumes at boot, which would force a rebuild.
     stat = path.stat()
-    return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns]
+    return [stat.st_ino, stat.st_size, stat.st_mtime_ns]
 
 
 def atomic_text(path, text, mode=0o644):
@@ -74,7 +75,8 @@ def install(binary, vendor, home, patch_hash=None):
     atomic_text(launcher, "#!/bin/sh\n" + marker + "\n" +
                 "exec /usr/bin/python3 " + shlex.quote(str(updater)) + ' "$@"\n', 0o755)
     print(f"Installed {version}: {native}")
-    print("Restart/resume existing sessions. Future npm upgrades rebuild and test the customizations on launch.")
+    print("Restart/resume existing sessions. After an npm upgrade, codex runs stock until the "
+          "rebuild-codex-shortcuts skill rebuilds this.")
 
 
 if __name__ == "__main__":

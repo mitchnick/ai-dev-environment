@@ -7,18 +7,34 @@ The managed launcher follows the installed npm Codex version. It uses
 Cmd+Shift+E's full effort cycle, including Max/Ultra and wrapping. Configuration,
 themes, hooks, skills, and saved sessions stay in the normal Codex home.
 
-Install or upgrade from this repository:
+Upgrade with `codex update` (or `python3 codex/scripts/update-shortcuts.py update`
+from this repository), or upgrade npm normally, and keep working. Launching never
+builds. When no tested customized build matches npm's version, `codex`/`cx`
+starts npm's stock Codex at once and prints one line naming the
+`rebuild-codex-shortcuts` skill.
 
-```sh
-python3 codex/scripts/update-shortcuts.py update
-```
+To bring the shortcuts to that version, ask an agent (Claude Code or Codex) to
+run the skill ([`codex/skills/rebuild-codex-shortcuts/SKILL.md`](../skills/rebuild-codex-shortcuts/SKILL.md)).
+It drives `codex/scripts/rebuild-shortcuts.py` through five steps: prepare a fresh
+clone of the release, port the patch if it no longer applies, build, gate, and
+install. It takes about 20 minutes in the background, nearly all of it compiling.
+The build counts as done only when every gate passes:
 
-After installation, use `codex update`, or upgrade npm normally and launch
-`codex`/`cx`. The launcher detects a version mismatch, fetches that exact official
-release, checks and applies the patch, builds the CLI, runs the TUI suite, and
-activates it with matching helpers. The first build for a release takes several
-minutes. Rust/Cargo (including cargo-nextest), `just`, git, npm, and the macOS
-build tools must be installed. The source release chooses its Rust toolchain.
+| Gate | Passes when |
+| --- | --- |
+| Shortcut tests | the six `personal_shortcuts` tests pass |
+| TUI suite | upstream's `codex-tui` suite passes, six tests at a time; a test that fails must pass when rerun alone |
+| Launcher tests | the `codex/scripts` unit tests pass on `/usr/bin/python3` |
+| Router tests | `herdr/shortcuts/test_cycle_effort.py` passes |
+
+Upstream's suite runs one test per CPU. On a busy machine its 60-second
+timeouts then fail tests that pass alone: on October 26, 2026, runs at full
+parallelism failed 27, then 20, of 5,855 tests, and all 20 passed alone. Six at
+a time, all 5,855 passed in 2 minutes 17 seconds. `install`
+refuses a build unless its gate passed for that exact binary, npm version and
+patch. It then runs the health check. Rust/Cargo (including cargo-nextest),
+`just`, git, npm, and the macOS build tools must be installed. The source
+release chooses its Rust toolchain.
 
 The launcher references this repository's updater; keep the checkout available.
 It records the owning npm executable in the machine-local `npm.json` beside the
@@ -29,8 +45,10 @@ sessions retain their executable and can exit/resume normally to pick up the
 new version. No running session is killed or overwritten.
 
 Each launch compares npm, the installed customization fingerprint, and the patch
-hash. Once they match, launching does no network access or compilation. A lock
-prevents concurrent launches from building simultaneously. Build dependencies
+hash. The fingerprint leaves out the volume's device number, which macOS
+renumbers at boot, so a restart never selects stock. Once they match, the
+launcher starts the customized build; otherwise it starts stock. Either way it
+does no network access or compilation. Build dependencies
 are cached in `~/.local/share/codex-shortcuts/target`; source attempts are retained
 under `builds/` for diagnosis. The capability manifest keeps the shortcut router
 working for both existing and upgraded sessions.
@@ -42,10 +60,10 @@ assignments; it never sources the file or executes shell code, and inherited
 values take precedence. Keep this machine-local file and all credentials out of
 the repository.
 
-If upstream changes incompatibly, patching, compilation, or tests stop the
-upgrade with an explicit error. The previous build remains recoverable at
-`~/.local/share/codex-shortcuts/current/bin/codex`; it is not silently selected as
-though the upgrade succeeded. Fix the reported incompatibility and relaunch.
+If upstream changes incompatibly, `prepare` stops for a port, or the build or
+gate fails with an explicit error. Stock Codex keeps running meanwhile. The
+previous customized release stays under `releases/`, and `current` keeps
+pointing at it, but the launcher never starts it for a newer npm version.
 No source patch can guarantee compatibility with arbitrary future upstream code.
 
 The patch also makes release-tag snapshot versions deterministic in tests and
