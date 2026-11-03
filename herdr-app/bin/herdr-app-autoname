@@ -1,0 +1,600 @@
+#!/usr/bin/env python3
+"""herdr-app-autoname: name Herdr app panes and tabs from each chat's first message.
+
+When a Claude Code, Codex or Pi chat gets its first message, a small model
+(gpt-6.1-sol through Pi's openai-codex provider, so the Codex subscription pays)
+turns it into a 1-3 word task name. Then:
+
+  pane  the terminal gets the label autoname.task=<name>; the pane-plus header
+        shows it while an agent runs there.
+  tab   "<checkout> - <name>" when the folder is one of several numbered
+        checkouts (app0, app1 ... or api-1, api-2 ...), else "<name>". The tab
+        is renamed only while it has no name, a placeholder name ("3", "3 -",
+        "app3 -") or the last name this script gave it. A name typed by hand
+        stays until it is cleared (tab.rename with "").
+
+/clear and new chats start over; resumed chats keep their names. A first
+message with no task in it ("hi") leaves things alone and the next one counts.
+
+herdr-app has no API for this from another machine, so the tab name is written
+in the core's `herdr-app` document (doc.get / doc.set through `hc connect`),
+the same way herdr-app-arrange writes splits. The write is versioned and
+changes only that tab's name. Works on any machine with hc, including remote
+machines the app connects to.
+
+Usage:
+  herdr-app-autoname hook claude|codex|pi      hook JSON on stdin (SessionStart,
+                                               UserPromptSubmit); prints nothing
+  herdr-app-autoname try [--cwd DIR] TEXT      print the names it would use
+  herdr-app-autoname status                    recent decisions (the log)
+  herdr-app-autoname install-hooks             add its SessionStart and UserPromptSubmit
+                                               hooks to ~/.claude/settings.json and
+                                               ~/.codex/hooks.json (backs up; idempotent)
+  herdr-app-autoname remove-hooks              take them out again
+
+Pi uses the herdr-app-autoname.ts extension instead of hooks.
+With ~/.local/state/herdr-app-autoname/debug present, the log also says why a
+hook did nothing.
+
+Environment: HERDR_AUTONAME_MODEL (default openai-codex/gpt-6.1-sol),
+HERDR_AUTONAME_PI (the pi executable), HERDR_AUTONAME_OFF=1 to disable.
+"""
+
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+MODEL = os.environ.get("HERDR_AUTONAME_MODEL", "openai-codex/gpt-6.1-sol")
+LABEL = "autoname.task"
+DOC = "herdr-app"
+STATE = Path.home() / ".local/state/herdr-app-autoname"
+MAX_PROMPT = 4000
+MAX_NAME = 32
+SYSTEM_PROMPT = """You name tabs in a terminal app. Read the first message a person sent to a coding agent and reply with a 1 to 3 word name for the task, like a short browser tab title.
+Rules: lowercase; plain words; no punctuation, quotes or emoji; never the project or repository name; prefer the concrete thing being worked on (google login, invoice pdf, flaky tests, deploy script).
+If the message has no task in it (a greeting, a bare yes or no, a lone command with no subject), reply NONE.
+Reply with the name only."""
+# Processes that sit between an agent and its hook command.
+PASS_THROUGH = {"sh", "bash", "zsh", "dash", "fish", "env", "login", "nohup", "timeout"}
+
+
+def hc_bin():
+	return shutil.which("hc") or str(Path.home() / ".local/bin/hc")
+
+
+def run(args, stdin=None, timeout=10):
+	return subprocess.run(args, input=stdin, capture_output=True, text=True, timeout=timeout)
+
+
+def log(event, **fields):
+	try:
+		STATE.mkdir(parents=True, exist_ok=True)
+		path = STATE / "log.jsonl"
+		line = json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **fields})
+		with open(path, "a") as f:
+			f.write(line + "\n")
+		if path.stat().st_size > 256_000:
+			keep = path.read_text().splitlines()[-500:]
+			path.write_text("\n".join(keep) + "\n")
+	except OSError:
+		pass
+
+
+# ---- names ------------------------------------------------------------------
+
+def pi_bin():
+	for candidate in (os.environ.get("HERDR_AUTONAME_PI"), shutil.which("pi"),
+			str(Path.home() / ".local/bin/pi"), "/opt/homebrew/bin/pi"):
+		if candidate and os.access(candidate, os.X_OK):
+			return candidate
+	return None
+
+
+def clean(text):
+	"""The model's reply as a 1-3 word lowercase name, or None."""
+	line = next((l for l in (text or "").splitlines() if l.strip()), "").lower()
+	line = re.sub(r"^\s*(name|task|title)\s*:\s*", "", line)
+	words = re.sub(r"[^a-z0-9+#&.\- ]+", " ", line).replace(" - ", " ").split()
+	words = [w.strip(".-") for w in words if w.strip(".-")][:3]
+	if not words or words[0] == "none":
+		return None
+	name = " ".join(words)
+	while len(name) > MAX_NAME and " " in name:
+		name = name.rsplit(" ", 1)[0]
+	return name[:MAX_NAME] or None
+
+
+def ask_model(prompt):
+	"""(name or None, error or None)."""
+	pi = pi_bin()
+	if not pi:
+		return None, "pi not found"
+	env = {k: v for k, v in os.environ.items() if not k.startswith(("HC_", "CLAUDE", "CODEX_"))}
+	command = [pi, "-p", "--model", MODEL, "--thinking", "off", "--no-session", "--no-tools",
+		"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
+		"--no-context-files", "--system-prompt", SYSTEM_PROMPT]
+	try:
+		result = subprocess.run(command, input=prompt[:MAX_PROMPT], capture_output=True,
+			text=True, timeout=60, env=env, cwd=str(Path.home()))
+	except (OSError, subprocess.TimeoutExpired) as error:
+		return None, f"pi: {error}"
+	if result.returncode != 0:
+		return None, f"pi exited {result.returncode}: {(result.stderr or result.stdout).strip()[:300]}"
+	return clean(result.stdout), None
+
+
+def checkout(cwd):
+	"""The checkout's folder name when it is one of several numbered siblings."""
+	if not cwd or not os.path.isdir(cwd):
+		return None
+	root = cwd
+	try:
+		top = run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], timeout=3)
+		if top.returncode == 0 and top.stdout.strip():
+			root = top.stdout.strip()
+	except (OSError, subprocess.TimeoutExpired):
+		pass
+	root = os.path.realpath(root)
+	base, parent = os.path.basename(root), os.path.dirname(root)
+	match = re.fullmatch(r"(.+?)(-?)(\d+)", base)
+	if not match:
+		return None
+	sibling = re.compile(re.escape(match.group(1) + match.group(2)) + r"\d+")
+	try:
+		names = os.listdir(parent)
+	except OSError:
+		return None
+	if any(n != base and sibling.fullmatch(n) and os.path.isdir(os.path.join(parent, n)) for n in names):
+		return base
+	return None
+
+
+def tab_name(task, prefix):
+	return f"{prefix} - {task}" if prefix else task
+
+
+def placeholder(name, prefix):
+	"""No name, Herdr's number, or a checkout prefix waiting for a task."""
+	base = re.sub(r"\s*-\s*$", "", (name or "").strip())
+	return base == "" or base.isdigit() or (prefix is not None and base == prefix)
+
+
+# ---- the terminal -----------------------------------------------------------
+
+_processes = None
+
+
+def process_table():
+	global _processes
+	if _processes is None:
+		_processes = {}
+		result = run(["ps", "-A", "-o", "pid=,ppid=,comm="], timeout=5)
+		for line in result.stdout.splitlines():
+			parts = line.split(None, 2)
+			if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+				_processes[int(parts[0])] = (int(parts[1]), os.path.basename(parts[2].strip()))
+	return _processes
+
+
+def ancestry():
+	"""This process's ancestors as pid:program, for the debug log."""
+	table, out, pid = process_table(), [], os.getpid()
+	while pid in table and pid > 1 and len(out) < 12:
+		out.append(f"{pid}:{table[pid][1]}")
+		pid = table[pid][0]
+	return out
+
+
+def terminal_info():
+	"""This hook's herdr-core terminal (as `hc get --json` describes it), or None.
+
+	Claude and Pi pass HC_TERMINAL_ID through to hooks. Codex runs hooks with a
+	cleaned environment, so then the terminal is the one whose shell is an
+	ancestor of this process.
+	"""
+	address = os.environ.get("HC_TERMINAL_ID")
+	if address:
+		result = run([hc_bin(), "get", address, "--json"], timeout=5)
+		return json.loads(result.stdout) if result.returncode == 0 else None
+	table = process_table()
+	shell, pid, seen = None, os.getpid(), set()
+	while pid in table and pid not in seen and pid > 1:
+		seen.add(pid)
+		ppid = table[pid][0]
+		if ppid in table and table[ppid][1] in ("herdr-core", "hc"):
+			shell = pid
+			break
+		pid = ppid
+	if shell is None:
+		return None  # not in a herdr-core terminal; don't wake the core
+	listed = rpc("terminal.list", {})
+	for info in listed.get("terminals", []) if isinstance(listed, dict) else listed:
+		if info.get("state") == "live" and info.get("pid") == shell:
+			return info
+	return None
+
+
+def hosted_by(foreground_pid, start_pid):
+	"""Whether the agent that ran this hook is the terminal's foreground program.
+
+	A Codex or Claude that another agent started (a cross-review `codex exec`,
+	a nested `claude -p`) shares the terminal but is not its foreground program,
+	so it must not rename that pane or tab.
+	"""
+	if not foreground_pid:
+		return False
+	table = process_table()
+	pid = start_pid
+	for _ in range(16):
+		if pid == foreground_pid:
+			return True
+		if pid not in table:
+			return False
+		ppid, comm = table[pid]
+		name = comm.lstrip("-").lower()
+		if name in PASS_THROUGH or name.startswith("python"):
+			pid = ppid
+			continue
+		# The first real program above the hook is the agent: it must be the
+		# foreground program, or a binary that program's launcher started.
+		return foreground_pid in (pid, ppid)
+	return False
+
+
+def set_label(address, task):
+	run([hc_bin(), "label", address, f"{LABEL}={task or ''}"], timeout=5)
+
+
+# ---- the tab ----------------------------------------------------------------
+
+class DocError(Exception):
+	pass
+
+
+def rpc(method, params):
+	request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	result = run([hc_bin(), "connect"], stdin=request + "\n", timeout=15)
+	lines = [l for l in result.stdout.splitlines() if l.strip()]
+	if not lines:
+		raise DocError(f"{method}: no answer from hc ({result.stderr.strip()})")
+	response = json.loads(lines[0])
+	if "error" in response:
+		error = response["error"]
+		raise DocError(f"{method}: {(error.get('data') or {}).get('kind') or error.get('message')}")
+	return response["result"]
+
+
+def find_tab(doc, tab_id):
+	for s, space in enumerate(doc.get("spaces") or []):
+		for t, tab in enumerate(space.get("tabs") or []):
+			if tab.get("id") == tab_id:
+				return s, t
+	return None
+
+
+def load_owned():
+	try:
+		return json.loads((STATE / "tabs.json").read_text())
+	except (OSError, ValueError):
+		return {}
+
+
+def save_owned(owned, doc):
+	live = {tab.get("id") for space in doc.get("spaces") or [] for tab in space.get("tabs") or []}
+	owned = {k: v for k, v in owned.items() if k in live}
+	tmp = STATE / "tabs.json.tmp"
+	tmp.write_text(json.dumps(owned, indent=1, sort_keys=True))
+	tmp.replace(STATE / "tabs.json")
+
+
+def rename_tab(tab_id, wanted, prefix):
+	"""Rename the tab unless a person named it. Returns what happened."""
+	STATE.mkdir(parents=True, exist_ok=True)
+	with open(STATE / "lock", "w") as lock:
+		fcntl.flock(lock, fcntl.LOCK_EX)
+		owned = load_owned()
+		for _ in range(4):
+			got = rpc("doc.get", {"name": DOC})
+			doc, version = got["value"], got["version"]
+			where = find_tab(doc, tab_id)
+			if where is None:
+				return "tab gone"
+			s, t = where
+			current = doc["spaces"][s]["tabs"][t].get("name") or ""
+			if current == wanted:
+				owned[tab_id] = wanted
+				save_owned(owned, doc)
+				return "unchanged"
+			if not (placeholder(current, prefix) or owned.get(tab_id) == current):
+				return f"kept manual name {current!r}"
+			new = json.loads(json.dumps(doc))
+			new["spaces"][s]["tabs"][t]["name"] = wanted
+			check = json.loads(json.dumps(new))
+			check["spaces"][s]["tabs"][t]["name"] = doc["spaces"][s]["tabs"][t].get("name")
+			if "name" not in doc["spaces"][s]["tabs"][t]:
+				del check["spaces"][s]["tabs"][t]["name"]
+			if check != doc:
+				raise DocError("the edit would change more than the tab's name; nothing written")
+			try:
+				rpc("doc.set", {"name": DOC, "value": new, "version": version})
+			except DocError as error:
+				if str(error).endswith("conflict"):
+					continue
+				raise
+			owned[tab_id] = wanted
+			save_owned(owned, new)
+			return f"renamed from {current!r}"
+		return "layout kept changing; gave up"
+
+
+# ---- sessions ---------------------------------------------------------------
+
+def marker(harness, session):
+	safe = re.sub(r"[^A-Za-z0-9._-]", "_", f"{harness}-{session}")[:160]
+	return STATE / "sessions" / safe
+
+
+def tidy_markers():
+	folder = STATE / "sessions"
+	cutoff = time.time() - 14 * 86400
+	try:
+		for path in folder.iterdir():
+			if path.stat().st_mtime < cutoff:
+				path.unlink()
+	except OSError:
+		pass
+
+
+def claim(harness, session):
+	"""True once per chat: the first message of it."""
+	path = marker(harness, session)
+	path.parent.mkdir(parents=True, exist_ok=True)
+	try:
+		os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+		return True
+	except FileExistsError:
+		return False
+
+
+def debug(reason, **fields):
+	"""With ~/.local/state/herdr-app-autoname/debug present, log why a hook stopped."""
+	if (STATE / "debug").exists():
+		log("hook skipped", reason=reason, **fields)
+
+
+def hook(harness):
+	if os.environ.get("HERDR_AUTONAME_OFF") == "1":
+		return
+	try:
+		data = json.load(sys.stdin)
+	except ValueError:
+		return debug("hook input is not JSON", harness=harness)
+	session = str(data.get("session_id") or "")
+	event = data.get("hook_event_name") or ""
+	if not session or data.get("agent_id") or os.environ.get("PI_SUBAGENT") == "1":
+		return debug("no session, or a sub-agent", harness=harness, hook_event=event, keys=sorted(data))
+
+	if event == "SessionStart":
+		source = data.get("source") or ""
+		if source in ("startup", "clear", "new"):
+			# A new chat: its first message names things again.
+			try:
+				marker(harness, session).unlink()
+			except OSError:
+				pass
+			info = terminal_info()
+			if info and (info.get("labels") or {}).get(LABEL) and hosted_by(
+					(info.get("foreground") or {}).get("pid"), os.getppid()):
+				set_label(info["address"], "")
+		elif source in ("resume", "fork"):
+			marker(harness, session).parent.mkdir(parents=True, exist_ok=True)
+			marker(harness, session).touch()
+		tidy_markers()
+		return
+
+	if event != "UserPromptSubmit":
+		return debug("other event", harness=harness, hook_event=event)
+	prompt = str(data.get("prompt") or "").strip()
+	if not prompt:
+		return debug("empty prompt", harness=harness, keys=sorted(data))
+	if not claim(harness, session):
+		return debug("not the chat's first message", harness=harness, session=session)
+	job = {"harness": harness, "session": session, "terminal": None, "tab": None,
+		"cwd": data.get("cwd"), "prompt": prompt[:MAX_PROMPT], "since": time.time()}
+	info = terminal_info()
+	if info:
+		address = info["address"]
+		if info.get("parent"):
+			# Sub-agents started with `hc run` have no pane or tab of their own.
+			return debug("an hc sub-agent", harness=harness, terminal=address)
+		tab = (info.get("labels") or {}).get("herdr.tab")
+		if not tab:
+			return debug("terminal is not in a tab", harness=harness, terminal=address)
+		if not hosted_by((info.get("foreground") or {}).get("pid"), os.getppid()):
+			return debug("not the terminal's foreground agent", harness=harness, terminal=address,
+				foreground=(info.get("foreground") or {}).get("pid"), ppid=os.getppid())
+		job.update(terminal=address, tab=tab,
+			cwd=job["cwd"] or (info.get("foreground") or {}).get("cwd") or info.get("cwd"))
+	elif harness == "codex" and not os.environ.get("HC_TERMINAL_ID"):
+		# Interactive Codex runs hooks in its app-server daemon, away from the
+		# pane. The worker finds the pane by the prompt on its screen.
+		if not any(comm in ("herdr-core", "hc") for _, comm in process_table().values()):
+			return debug("herdr-core is not running", harness=harness)
+	else:
+		return debug("not in a herdr-core terminal", harness=harness, ancestry=ancestry())
+	worker = subprocess.Popen([sys.executable, os.path.abspath(__file__), "worker"],
+		stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+		start_new_session=True, close_fds=True, text=True)
+	worker.stdin.write(json.dumps(job))
+	worker.stdin.close()
+
+
+def squash(text):
+	return re.sub(r"\s+", "", text or "")
+
+
+def same_folder(info, cwd):
+	where = (info.get("foreground") or {}).get("cwd") or info.get("cwd")
+	return bool(cwd and where) and os.path.realpath(where) == os.path.realpath(cwd)
+
+
+def find_codex_pane(prompt, cwd, since):
+	"""The live Codex pane this prompt was typed into, or None when unsure."""
+	listed = rpc("terminal.list", {})
+	pool = [t for t in (listed.get("terminals", []) if isinstance(listed, dict) else listed)
+		if t.get("state") == "live" and not t.get("parent")
+		and (t.get("labels") or {}).get("herdr.tab")
+		and (t.get("status") or {}).get("app") == "codex"]
+	# The TUI shows a submitted prompt in its history. Wrapping and indent
+	# change the spacing, so compare without whitespace.
+	needle = squash(next((l for l in prompt.splitlines() if l.strip()), ""))[:60]
+	hits = []
+	for info in pool:
+		screen = run([hc_bin(), "read", info["address"], "--lines", "400"], timeout=5)
+		if len(needle) >= 8 and needle in squash(screen.stdout):
+			hits.append(info)
+	if len(hits) > 1:
+		hits = [t for t in hits if same_folder(t, cwd)]
+	if len(hits) == 1:
+		return hits[0]
+	if hits:
+		return None
+	# A pasted prompt shows as a placeholder: fall back to the one Codex in
+	# that folder whose status changed since the prompt went in.
+	recent = [t for t in pool if same_folder(t, cwd) and (t.get("status_ms") or 0) / 1000 >= since - 5]
+	return recent[0] if len(recent) == 1 else None
+
+
+def work():
+	job = json.load(sys.stdin)
+	task, error = ask_model(job["prompt"])
+	where = {"terminal": job["terminal"], "tab": job["tab"], "harness": job["harness"]}
+	if error:
+		log("model failed", error=error, **where)
+		return
+	if not task:
+		# No task in this message: let the chat's next message try.
+		try:
+			marker(job["harness"], job["session"]).unlink()
+		except OSError:
+			pass
+		log("no task", **where)
+		return
+	if not job["terminal"]:
+		info = find_codex_pane(job["prompt"], job.get("cwd"), job.get("since") or time.time())
+		if not info:
+			log("pane not found", task=task, **where)
+			return
+		job["terminal"] = where["terminal"] = info["address"]
+		job["tab"] = where["tab"] = info["labels"]["herdr.tab"]
+		job["cwd"] = job.get("cwd") or (info.get("foreground") or {}).get("cwd")
+	set_label(job["terminal"], task)
+	prefix = checkout(job.get("cwd"))
+	wanted = tab_name(task, prefix)
+	try:
+		outcome = rename_tab(job["tab"], wanted, prefix)
+	except (DocError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+		outcome = f"failed: {error}"
+	log("named", task=task, tab_name=wanted, outcome=outcome, **where)
+
+
+def try_name(args):
+	cwd = os.getcwd()
+	if args[:1] == ["--cwd"] and len(args) >= 2:
+		cwd, args = args[1], args[2:]
+	text = " ".join(args) if args else sys.stdin.read()
+	task, error = ask_model(text)
+	if error:
+		print(f"herdr-app-autoname: {error}", file=sys.stderr)
+		return 1
+	prefix = checkout(cwd)
+	print(json.dumps({"task": task, "checkout": prefix, "tab": tab_name(task, prefix) if task else None}))
+	return 0
+
+
+def hook_targets():
+	"""(settings file, hooks dict getter, command, extra group fields) per harness."""
+	me = str(Path.home() / ".local/bin/herdr-app-autoname")
+	return [
+		(Path.home() / ".claude/settings.json", '"$HOME/.local/bin/herdr-app-autoname" hook claude', {}),
+		# Codex runs hooks from its app-server daemon: give it the absolute path.
+		(Path.home() / ".codex/hooks.json", f"{me} hook codex", {"matcher": ""}),
+	]
+
+
+def edit_hooks(install):
+	stamp = time.strftime("%Y%m%d-%H%M%S")
+	for path, command, extra in hook_targets():
+		if not path.parent.is_dir():
+			print(f"skip {path}: {path.parent} does not exist")
+			continue
+		settings = json.loads(path.read_text()) if path.exists() else {}
+		hooks = settings.setdefault("hooks", {})
+		changed = False
+		for event in ("SessionStart", "UserPromptSubmit"):
+			groups = hooks.setdefault(event, [])
+			ours = [g for g in groups if any(h.get("command") == command for h in g.get("hooks", []))]
+			if install and not ours:
+				groups.append({**extra, "hooks": [{"type": "command", "command": command, "timeout": 5}]})
+				changed = True
+			elif not install and ours:
+				for group in ours:
+					group["hooks"] = [h for h in group["hooks"] if h.get("command") != command]
+				hooks[event] = [g for g in groups if g.get("hooks")]
+				changed = True
+			if not hooks.get(event):
+				hooks.pop(event, None)
+		if not changed:
+			print(f"unchanged {path}")
+			continue
+		if path.exists():
+			shutil.copy2(path, path.with_name(f"{path.name}.before-autoname-{stamp}"))
+		tmp = path.with_name(path.name + ".autoname-tmp")
+		tmp.write_text(json.dumps(settings, indent=2) + "\n")
+		tmp.replace(path)
+		print(f"{'added to' if install else 'removed from'} {path} (backup .before-autoname-{stamp})")
+	return 0
+
+
+def status():
+	path = STATE / "log.jsonl"
+	if not path.exists():
+		print("nothing logged yet")
+		return 0
+	for line in path.read_text().splitlines()[-30:]:
+		print(line)
+	return 0
+
+
+def main():
+	args = sys.argv[1:]
+	if args[:1] == ["hook"] and len(args) == 2 and args[1] in ("claude", "codex", "pi"):
+		try:
+			hook(args[1])
+		except Exception as error:  # a cosmetic hook must never block a prompt
+			log("hook failed", error=repr(error)[:300], harness=args[1])
+		return 0
+	if args == ["worker"]:
+		try:
+			work()
+		except Exception as error:
+			log("worker failed", error=repr(error)[:300])
+		return 0
+	if args[:1] == ["try"]:
+		return try_name(args[1:])
+	if args == ["status"]:
+		return status()
+	if args in (["install-hooks"], ["remove-hooks"]):
+		return edit_hooks(args[0] == "install-hooks")
+	print(__doc__.strip(), file=sys.stderr)
+	return 2
+
+
+if __name__ == "__main__":
+	sys.exit(main())

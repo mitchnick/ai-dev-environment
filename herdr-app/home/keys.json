@@ -69,6 +69,7 @@
     "cmd-g": "mod.open:picker",
     "cmd-alt-w": "tab.close",
     "cmd-shift-t": "tab.rename",
+    "cmd-shift-n": "mod.open:rename-pane",
     "cmd-shift-left": "pane.swap:left",
     "cmd-shift-right": "pane.swap:right",
     "cmd-shift-up": "pane.swap:up",
