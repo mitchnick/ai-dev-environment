@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""herdr-app-arrange: arrange the panes of one herdr-app tab into equal columns.
+
+The herdr-app port of ~/.local/lib/herdr-arrange/arrange.py (cmd+shift+r wide,
+cmd+ctrl+r laptop). Same rules:
+
+  wide    up to 4 columns     laptop  up to 2 columns     more panes add rows
+
+If the panes already form that many columns and rows and no pane spans columns,
+only the widths are evened out: every pane keeps its slot and rows keep their
+heights. Otherwise the panes reflow in structural reading order (rows left to
+right, not pixel order) into stacked columns, one pane wide each; a short last
+row leaves the right-hand columns taller.
+
+herdr-app has no command for split sizes, so this edits the tab's tree in the
+core's `herdr-app` document (doc.get / doc.set through `hc connect`), the same
+document the app itself writes. Only that tab's tree changes: every pane keeps
+its id and terminal, so nothing restarts. The write is versioned (a concurrent
+change makes it re-read and try again), checked to touch nothing else, and the
+previous document is kept in ~/.local/state/herdr-app-arrange/before.json.
+
+Usage: herdr-app-arrange wide|laptop --tab <tab id>
+       (herdr-app's arrange-wide / arrange-laptop mods pass the focused tab)
+"""
+
+import argparse
+import copy
+import json
+import math
+import os
+from pathlib import Path
+import secrets
+import shutil
+import subprocess
+import sys
+
+DOC = "herdr-app"
+CAPS = {"wide": 4, "laptop": 2}
+STATE = Path.home() / ".local/state/herdr-app-arrange"
+
+
+class ArrangeError(Exception):
+	pass
+
+
+def hc_bin():
+	return shutil.which("hc") or str(Path.home() / ".local/bin/hc")
+
+
+def rpc(method, params):
+	request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	result = subprocess.run([hc_bin(), "connect"], input=request + "\n", capture_output=True, text=True, timeout=15)
+	lines = [line for line in result.stdout.splitlines() if line.strip()]
+	if not lines:
+		raise ArrangeError(f"{method}: no answer from hc ({result.stderr.strip()})")
+	response = json.loads(lines[0])
+	if "error" in response:
+		error = response["error"]
+		kind = (error.get("data") or {}).get("kind") or error.get("message")
+		raise ArrangeError(f"{method}: {kind}")
+	return response["result"]
+
+
+# ---- the tab tree -----------------------------------------------------------
+# Nodes are {"type": "row"|"column", "id", "children", "size"?} and panes are
+# {"type": "block", "id", "content", "size"?}. A missing size means weight 1.
+
+def blocks(node):
+	if node["type"] == "block":
+		return [node]
+	return [b for child in node["children"] for b in blocks(child)]
+
+
+def dimensions(node):
+	"""Logical (columns, rows), independent of pixel sizes and weights."""
+	if node["type"] == "block":
+		return 1, 1
+	dims = [dimensions(child) for child in node["children"]]
+	if node["type"] == "row":
+		return sum(c for c, _ in dims), max(r for _, r in dims)
+	return max(c for c, _ in dims), sum(r for _, r in dims)
+
+
+def reading_order(root):
+	"""Structural rows, left to right; uneven sizes can't swap slots."""
+	found = []
+
+	def visit(node, column, row):
+		if node["type"] == "block":
+			found.append((row, column, len(found), node))
+			return
+		for child in node["children"]:
+			visit(child, column, row)
+			columns, rows = dimensions(child)
+			if node["type"] == "row":
+				column += columns
+			else:
+				row += rows
+
+	visit(root, 0, 0)
+	return [node for *_, node in sorted(found, key=lambda f: f[:3])]
+
+
+def single_column_panes(node):
+	"""In a column, children of different widths mean a pane spans columns."""
+	if node["type"] == "block":
+		return True
+	if node["type"] == "column" and len({dimensions(child)[0] for child in node["children"]}) > 1:
+		return False
+	return all(single_column_panes(child) for child in node["children"])
+
+
+def equal_widths(node):
+	"""Keep the shape and the row heights; weight each row's children by their columns."""
+	node = copy.deepcopy(node)
+
+	def visit(n):
+		if n["type"] == "block":
+			return
+		if n["type"] == "row":
+			for child in n["children"]:
+				child["size"] = {"weight": float(dimensions(child)[0])}
+		for child in n["children"]:
+			visit(child)
+
+	visit(node)
+	return node
+
+
+def sized(node):
+	return dict(node, size={"weight": 1.0})
+
+
+def grid(root, panes, columns):
+	"""Row-major reading order, built as stacked columns of equal weight."""
+	stacks = []
+	for i in range(columns):
+		members = [sized(p) for p in panes[i::columns]]
+		if len(members) == 1:
+			stacks.append(members[0])
+		else:
+			stacks.append({"type": "column", "id": "s" + secrets.token_hex(16), "size": {"weight": 1.0}, "children": members})
+	out = {k: v for k, v in root.items() if k != "children"}
+	out["type"] = "row"
+	out["children"] = stacks
+	return out
+
+
+def weight(node):
+	return float((node.get("size") or {}).get("weight", 1.0))
+
+
+def same_tree(a, b):
+	if a["type"] != b["type"] or a["id"] != b["id"] or abs(weight(a) - weight(b)) > 1e-6:
+		return False
+	if a["type"] == "block":
+		return a.get("content") == b.get("content")
+	return len(a["children"]) == len(b["children"]) and all(same_tree(x, y) for x, y in zip(a["children"], b["children"]))
+
+
+def desired(root, mode):
+	panes = reading_order(root)
+	columns = min(CAPS[mode], len(panes))
+	rows = math.ceil(len(panes) / columns)
+	if dimensions(root) == (columns, rows) and single_column_panes(root):
+		return equal_widths(root)
+	return grid(root, panes, columns)
+
+
+# ---- the document -------------------------------------------------------------
+
+def find_tab(doc, tab_id):
+	for s, space in enumerate(doc.get("spaces", [])):
+		for t, tab in enumerate(space.get("tabs", [])):
+			if tab.get("id") == tab_id:
+				return s, t
+	raise ArrangeError(f"tab {tab_id} isn't in the {DOC} document")
+
+
+def arrange(mode, tab_id, machine=None):
+	where = {"on": machine} if machine else {}
+	for _ in range(3):
+		got = rpc("doc.get", {"name": DOC, **where})
+		doc, version = got["value"], got["version"]
+		s, t = find_tab(doc, tab_id)
+		root = doc["spaces"][s]["tabs"][t]["root"]
+		if len(blocks(root)) < 2:
+			return {"tab": tab_id, "panes": len(blocks(root)), "changed": False}
+		tree = desired(root, mode)
+		if same_tree(tree, root):
+			return {"tab": tab_id, "panes": len(blocks(root)), "changed": False}
+		# Every pane, exactly once, untouched; nothing outside this tab differs.
+		key = lambda b: (b["id"], json.dumps(b.get("content"), sort_keys=True))
+		if sorted(map(key, blocks(tree))) != sorted(map(key, blocks(root))):
+			raise ArrangeError("the new tree doesn't hold the same panes; nothing written")
+		new = copy.deepcopy(doc)
+		new["spaces"][s]["tabs"][t]["root"] = tree
+		check = copy.deepcopy(new)
+		check["spaces"][s]["tabs"][t]["root"] = root
+		if check != doc:
+			raise ArrangeError("the change would reach outside the tab; nothing written")
+		STATE.mkdir(parents=True, exist_ok=True)
+		(STATE / "before.json").write_text(json.dumps({"version": version, "machine": machine, "value": doc}, indent=1))
+		try:
+			rpc("doc.set", {"name": DOC, "value": new, "version": version, **where})
+		except ArrangeError as error:
+			if str(error).endswith("conflict"):
+				continue
+			raise
+		return {"tab": tab_id, "panes": len(blocks(root)), "changed": True, "mode": mode}
+	raise ArrangeError("the layout kept changing underneath; try again")
+
+
+def main():
+	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+	parser.add_argument("mode", choices=sorted(CAPS))
+	parser.add_argument("--tab", required=True, help="tab id, as herdr-app shows it (machine/tb… for another machine)")
+	args = parser.parse_args()
+	machine, _, tab = args.tab.rpartition("/")
+	try:
+		print(json.dumps(arrange(args.mode, tab, machine or None)))
+		return 0
+	except (ArrangeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+		print(f"herdr-app-arrange: {error}", file=sys.stderr)
+		return 1
+
+
+if __name__ == "__main__":
+	sys.exit(main())

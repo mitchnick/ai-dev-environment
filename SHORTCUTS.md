@@ -2,16 +2,18 @@
 
 Copy any section below into a sidebar notepad. These are personal shortcuts and aliases; the other machine needs the corresponding configuration.
 
-## Herdr — Spaces (workspaces)
+The Herdr sections are for the Herdr desktop app with [`herdr-app/home/keys.json`](herdr-app/home/keys.json) installed. The old Herdr 0.9.0 TUI's keys, including its `Ctrl+B` prefix layer, are in [`herdr/config/config.toml`](herdr/config/config.toml) (legacy).
+
+## Herdr — Spaces
 
 ```text
-Cmd+Alt+1..9 - Switch to workspace 1-9
-Cmd+Alt+Up - Previous workspace
-Cmd+Alt+Down - Next workspace
-Cmd+N - New workspace
-Cmd+Shift+W - Close workspace
-Cmd+Shift+P - Workspace picker
-Cmd+G - Goto
+Cmd+Alt+1..9 - Switch to space 1-9
+Cmd+Alt+Up - Previous space
+Cmd+Alt+Down - Next space
+Cmd+N - New space
+Cmd+Shift+W - Close space
+Shift+F2 - Rename space
+Cmd+Shift+P / Cmd+G / Cmd+P - Picker: go to a tab, space or agent
 ```
 
 ## Herdr — Tabs
@@ -22,7 +24,7 @@ Cmd+Alt+Left - Previous tab
 Cmd+Alt+Right - Next tab
 Cmd+T - New tab
 Cmd+Alt+W - Close tab
-Cmd+Shift+T - Rename tab
+Cmd+Shift+T / F2 - Rename tab
 Cmd+Alt+Shift+Left - Move tab left
 Cmd+Alt+Shift+Right - Move tab right
 ```
@@ -30,29 +32,56 @@ Cmd+Alt+Shift+Right - Move tab right
 ## Herdr — Panes
 
 ```text
-Cmd+D - Split vertical
-Cmd+Shift+D - Split horizontal
+Cmd+D - Split right
+Cmd+Shift+D - Split down
 Cmd+W - Close pane
 Cmd+Shift+Enter - Zoom pane
 Cmd+] - Cycle to next pane
 Cmd+[ - Cycle to previous pane
+Cmd+Ctrl+Arrows - Focus the pane in that direction
+Cmd+Shift+Arrows - Swap with the pane in that direction
+Cmd+M - Move pane to another tab
+Cmd+Shift+M - Move pane: full menu (re-split, swap, tab, space)
+Cmd+Shift+R - Arrange panes wide (up to 4 columns)
+Cmd+Ctrl+R - Arrange panes for a laptop (up to 2 columns)
+Resize - Drag the divider between panes
+```
+
+## Herdr — Agents, search and links
+
+```text
+Cmd+Alt+Shift+Up - Previous agent
+Cmd+Alt+Shift+Down - Next agent
+Cmd+Shift+E - Cycle reasoning effort in the focused agent
+Cmd+E - Model picker (sends Esc+E to the terminal)
+Cmd+K - Pick a link the agent mentioned (Enter opens, Ctrl+Y copies)
+Cmd+F - Search scrollback (Enter copies the line, Shift+Enter with context)
+Cmd+Shift+G - Git graph panel (main-plus layout)
+```
+
+## Herdr — App
+
+```text
 Cmd+B - Toggle sidebar
-Cmd+Ctrl+R - Resize mode
-Cmd+F - Copy mode
-Cmd+K - Get a link from output
+Cmd+Shift+L - Switch layout
+Cmd+, - Settings
+Cmd+/ - Help
+Cmd+= / Cmd+- / Cmd+0 - Zoom in / out / reset
+Commands - Click "commands" in the status bar for the command palette
+Ctrl+Alt+Shift+Escape - Escape hatch: reset keys.json and the layout to Herdr's defaults
 ```
 
 ## Ghostty — Shell aliases and helpers
 
 ```text
-4x4 - Open 4 windows in Ghostty
-2x2 - Open 2 windows in Ghostty
+4x4 - Open 4 panes: a new 2x2 Herdr tab in Herdr, else a Ghostty window
+2x2 - Open 2 panes: a new side-by-side Herdr tab in Herdr, else a Ghostty window
 be - bundle exec
 rs - bundle exec rspec
 rc - bundle exec rails console
 rr - bundle exec rails routes | grep
 mig - bundle exec rails generate migration
-dmig - bundle exec rails generate data_migrate
+dmig - bundle exec rails generate data_migration
 gad - bundle exec rails generate administrate:dashboard
 ```
 

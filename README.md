@@ -11,7 +11,8 @@ See [Shortcuts](SHORTCUTS.md) for a copyable cheat sheet of Herdr, Ghostty, and 
 | [`claude-code/`](claude-code/) | Preferences, global instructions, keybindings, aliases, statusline, workflow, plugins |
 | [`codex/`](codex/) | Model and reasoning preferences, terminal display, keybindings, theme, aliases, shared global instructions |
 | [`pi/`](pi/) | Preferences, keybindings, theme, custom extensions, helpers, npm extensions |
-| [`herdr/`](herdr/) | Preferences, keybindings, custom plugins, helpers, patch, external plugin |
+| [`herdr-app/`](herdr-app/) | The Herdr desktop app: settings, keybindings, theme, layout, mods, helper scripts, automations config |
+| [`herdr/`](herdr/) | **Legacy** Herdr 0.9.0 TUI: preferences, keybindings, custom plugins, helpers, patches, external plugin |
 | [`ghostty/`](ghostty/) | Preferences, keybindings, aliases, split helpers |
 
 ## Excluded

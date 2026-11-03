@@ -1,4 +1,6 @@
-# Herdr
+# Herdr (legacy)
+
+> **Legacy.** This is the old terminal-UI Herdr 0.9.0, run inside Ghostty. Daily use has moved to the Herdr desktop app: see [`../herdr-app/`](../herdr-app/README.md), and [SETUP.md](../SETUP.md) for a new machine. This material is kept, unchanged, for a machine that still runs the old Herdr. Its install steps are in [SETUP.md Appendix L](../SETUP.md#appendix-l-legacy-herdr-090-tui).
 
 Needs input gets one ding and desktop popup. Finished work stays in the sidebar, with **no ding and no popup**. This export targets Herdr 0.9.0 on macOS with Ghostty.
 

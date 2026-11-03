@@ -2,13 +2,17 @@
 
 Read this file, then work through sections 1–12 in order. It is the setup entry point for a human or coding agent. Commands assume macOS and zsh. Run each command only after the preceding command succeeds; this is a runbook, not a script to paste wholesale.
 
-The goal is a working Ghostty + Herdr environment with Claude Code, Codex, and Pi, the exported themes and shortcuts, and every included customization either installed and checked or explicitly accounted for. Keep this checkout at a permanent path: linked Herdr plugins execute files from it.
+The goal is a working Herdr app environment (the Herdr desktop app with herdr-core) with Claude Code, Codex, and Pi, Ghostty as the second terminal, the exported themes and shortcuts, and every included customization either installed and checked or explicitly accounted for. Keep this checkout at a permanent path: the Codex rebuild skill is linked from it.
+
+The old terminal-UI Herdr 0.9.0 (config at `~/.config/herdr/config.toml`, run inside Ghostty) is **legacy**. A new machine does not install it. Its steps are kept, unchanged, in [Appendix L](#appendix-l-legacy-herdr-090-tui) for a machine that still runs it.
 
 **Completion means passing section 11 and producing section 12's handoff.** Copying files alone is not completion. A missing credential, unavailable package, failed check, or untested UI behavior remains a named outstanding item. Do not claim an exact replica when an excluded component is missing.
 
-This guide was audited against the repository on September 17, 2026. The repository contains configuration and source, not a bootable machine image. Package registries, provider model access, and upstream applications can change. A clean-machine installation and the physical keyboard, sound, and notification checks must still be performed on the destination Mac.
+This guide was audited against the repository on September 17, 2026; the Herdr app sections (3, 6, 7, 10, 11) were added and rehearsed on November 3, 2026. The repository contains configuration and source, not a bootable machine image. Package registries, provider model access, and upstream applications can change. A clean-machine installation and the physical keyboard, sound, and notification checks must still be performed on the destination Mac.
 
 Authoring validation: all 45 shell blocks passed zsh syntax checks; relative documentation links resolved; 12 file-install blocks were rehearsed in a disposable home path containing spaces. That rehearsal verified all 35 tracked Pi extension files, shared instruction links, preservation of existing configs, repeated copies, and symlink backups. The audit also accounted for all 32 configuration/helper/workflow/statusline files, all nine Pi package sources, and every Herdr plugin action. These checks did not install the applications, compile the optional upstream builds, authenticate accounts, or verify physical UI behavior on a clean Mac.
+
+Herdr app rehearsal (November 3, 2026): the shell blocks of section 6, the section 7 Ghostty block and `herdr-app check` loop, the section 4 `.zshenv` snippet, and section 11's offline checks were extracted from this file and run against a clean clone, in a disposable home path containing spaces. All fourteen mods passed `herdr-app check`. The pinned upstream git-graph and automations mods, and the automations binary, came out identical to the source machine's, and the CLI loaded the starter config. Re-running stopped at `settings.json` and `keys.json` for a merge, and backed up the other files once. Every extracted block passed `zsh -n`. The rehearsal did not open the app, switch its layout, install the login service, or press any keys.
 
 ## 1. Establish scope and record the machine
 
@@ -23,7 +27,7 @@ From the permanent checkout:
 ```sh
 export AI_ENV_REPO="$(pwd -P)"
 test -f "$AI_ENV_REPO/README.md"
-test -f "$AI_ENV_REPO/herdr/config/config.toml"
+test -f "$AI_ENV_REPO/herdr-app/home/keys.json"
 sw_vers
 uname -m
 git rev-parse HEAD
@@ -41,10 +45,12 @@ Version anchors from this export:
 | Python | Use Homebrew Python **3.11+** for TOML validation and tests |
 | Pi | `@earendil-works/pi-coding-agent@0.85.1`; do not substitute the older package namespace |
 | Codex | `@openai/codex@latest`; managed customization port tested on 0.162.1 |
-| Herdr | **0.9.0** is the export's tested base; later versions require compatibility checks |
+| Herdr app | **0.1.12** with herdr-core (`hc`) **0.1.17** exported; both self-update. macOS builds are **Apple Silicon only** (Intel must build from source) |
+| Herdr TUI (legacy) | **0.9.0**; only for [Appendix L](#appendix-l-legacy-herdr-090-tui) |
 | Bun | **1.4.2** is the recorded passing runtime for Pi socket tests; 1.2.13 can hang |
-| Rust | **1.95.0** for the Codex patch; **1.96.1** for Herdr patches |
-| Zig | **0.15.2** for the Herdr source build; Homebrew `zig@0.15` is keg-only |
+| Rust | **1.95.0** for the Codex patch; **1.96.1** for the legacy Herdr patches |
+| Zig | **0.15.2** for the legacy Herdr source build; Homebrew `zig@0.15` is keg-only |
+| Herdr app extras | `rabeeh-ta/herdr-git-graph` at `b70e795`; `DnzzL/herdr-automations` **v0.11.3** |
 | Font | MesloLGS Nerd Font Mono, Nerd Fonts **3.5.0+** for the exported glyphs |
 
 Do not silently downgrade an existing installation to these anchors. Build pinned custom binaries separately. If a pinned version is unavailable, record that limitation and validate the chosen alternative before enabling its dependent feature.
@@ -108,12 +114,12 @@ else
   echo 'Install Homebrew before continuing.' >&2
 fi
 brew --version
-brew install git python node jq fzf ripgrep terminal-notifier just rustup
+brew install git python node jq ripgrep just rustup
 brew install --cask ghostty font-meslo-lg-nerd-font
 brew install oven-sh/bun/bun
 ```
 
-Use the installed Node if it meets the minimum. If package availability or an existing version manager prevents these commands, resolve the installation first; do not hide errors. `bat` is optional for Openr previews. `direnv` is optional for image-provider keys; inherited environment variables work without it. VS Code's `code` launcher is needed only if retaining Pi's `externalEditor = "code --wait"`; otherwise select an installed editor.
+Use the installed Node if it meets the minimum. If package availability or an existing version manager prevents these commands, resolve the installation first; do not hide errors. The Herdr app's terminal font comes from `font-meslo-lg-nerd-font`; without it, the app falls back to JetBrains Mono. The legacy Herdr TUI also needs `fzf` and `terminal-notifier` ([Appendix L](#l2-install-its-runtime-dependencies-before-its-config)). `direnv` is optional for image-provider keys; inherited environment variables work without it. VS Code's `code` launcher is needed only if retaining Pi's `externalEditor = "code --wait"`; otherwise select an installed editor.
 
 In `~/.zprofile`, retain Homebrew's `shellenv` line. In `~/.zshrc`, ensure `~/.local/bin` is first on PATH **after** any nvm/mise/other version-manager initialization. Add each line only once:
 
@@ -141,10 +147,9 @@ Preserve an existing Rust default rather than changing it unnecessarily. The ver
 Create destinations:
 
 ```sh
-mkdir -p "$HOME/Projects" "$HOME/.local/bin" "$HOME/.local/lib/herdr-arrange" \
+mkdir -p "$HOME/Projects" "$HOME/.local/bin" \
   "$HOME/.config/ai-dev-environment" "$HOME/.config/ghostty" \
-  "$HOME/.config/herdr/shortcuts" "$HOME/.config/herdr/agent-detection" \
-  "$HOME/.config/herdr/plugins/local" "$HOME/.claude/bin" \
+  "$HOME/.config/herdr-app/mods" "$HOME/.claude/bin" \
   "$HOME/.claude/workflows" "$HOME/.codex/themes" \
   "$HOME/.pi/agent/extensions" "$HOME/.pi/agent/themes"
 ```
@@ -194,46 +199,31 @@ test -f "$PI_CLI_PATH"
 
 Persist these two resolved absolute paths as quoted exports in `~/.config/ai-dev-environment/shell.zsh` later. Do not make them depend on whichever Node a project happens to select. Version-manager paths must be revised if that runtime is removed. On Intel, the wrapper's `/opt/homebrew` defaults will not work without these overrides.
 
-### Herdr
+### Herdr app and herdr-core
 
-On a fresh machine, install the [0.9.0 release](https://github.com/herdrdev/herdr/releases/tag/v0.9.0) to match this export. These macOS asset digests were verified from GitHub's release metadata when this guide was written:
+The Herdr app is the window: spaces, tabs, panes and mods. herdr-core (`hc`) runs every terminal and agent, and keeps them running when the window closes or updates. macOS releases are **Apple Silicon only**. On an Intel Mac, either [build from source](https://github.com/herdrdev/herdr-app#build-from-source) or record the Herdr app as blocked.
 
-```sh
-case "$(uname -m)" in
-  arm64)
-    AI_ENV_HERDR_ASSET=herdr-macos-aarch64
-    AI_ENV_HERDR_SHA=32b53df09872628059c789a69f02a6b8e29e14ddf26711421f3463f70c1aef17
-    ;;
-  x86_64)
-    AI_ENV_HERDR_ASSET=herdr-macos-x86_64
-    AI_ENV_HERDR_SHA=d0c920b2a126a74809fa1491411c9a097a44786cac9c2ca51b818a995581cf16
-    ;;
-  *) echo 'Unsupported architecture' >&2 ;;
-esac
-curl -fsSL "https://github.com/herdrdev/herdr/releases/download/v0.9.0/$AI_ENV_HERDR_ASSET" \
-  -o "$AI_ENV_BACKUP/herdr-download"
-test "$(shasum -a 256 "$AI_ENV_BACKUP/herdr-download" | awk '{print $1}')" = "$AI_ENV_HERDR_SHA"
-chmod +x "$AI_ENV_BACKUP/herdr-download"
-put_file "$AI_ENV_BACKUP/herdr-download" "$HOME/.local/bin/herdr"
-herdr --version
-```
-
-For an intentionally chosen newer installation, the [official installer](https://herdr.dev/) instead downloads the current release. Download and inspect it before execution:
+Use [Herdr's own installer](https://github.com/herdrdev/herdr-app#install). It installs `~/Applications/Herdr.app` with its release signature intact and links `~/.local/bin/herdr-app` to it. If no herdr-core is installed yet, it also installs one into `~/.local/bin/herdr-core`, with `hc` beside it. It checks each download's checksum. Download it and inspect it before running:
 
 ```sh
-curl -fsSL https://herdr.dev/install.sh -o "$AI_ENV_BACKUP/herdr-install.sh"
+curl -fsSL https://releases.herdr.dev/app/install.sh -o "$AI_ENV_BACKUP/herdr-app-install.sh"
 ```
 
-After inspection, and only if choosing that alternative:
+After inspecting that file:
 
 ```sh
-sh "$AI_ENV_BACKUP/herdr-install.sh"
-herdr --version
+sh "$AI_ENV_BACKUP/herdr-app-install.sh"
+"$HOME/.local/bin/herdr-app" --version
+"$HOME/.local/bin/herdr-core" --version
 ```
 
-If the result is newer than 0.9.0, validate config and plugins against it. Do not apply 0.9.0 source patches to that binary or newer source. For the exact patched baseline, section 9 builds 0.9.0 from its pinned source separately. Retain a stock executable before changing the launcher.
+`herdr-app --version` prints the version without opening a window. If herdr-core did not install, the app offers to install it when it opens; [`core/install.sh`](https://github.com/herdrdev/herdr-core#install) installs it the same way. The installer creates `hc` only when no other `hc` exists (some window managers ship one). If `command -v hc` is not `~/.local/bin/hc`, use `herdr-core` by name.
 
-Do not launch Herdr until the shell environment in section 7 is ready. Its server retains its startup environment; changing your current terminal's PATH does not update an already-running server.
+The source machine instead dragged [Herdr.dmg](https://releases.herdr.dev/app/Herdr.dmg) into `/Applications`. That works too: launched from there, the app links `~/.local/bin/herdr-app` itself. A launch from the disk image does not. Never edit or re-sign the bundle.
+
+Both update themselves: the app downloads new releases and, on the first start after an update, updates herdr-core too, with terminals still running. It never updates a herdr-core that a package manager installed.
+
+**Do not open the app yet.** Section 6 installs its files first, so that on the first start the app writes its own files around them. Section 7 opens it once the shell environment is ready. If the app has already been opened on this machine, section 6 stops at `settings.json` and `keys.json` so they can be merged.
 
 ## 4. Install shared instructions and Claude Code files
 
@@ -279,7 +269,16 @@ Before launching Claude, edit the installed preferences as needed:
 
 - Remove or adapt `Read(~/Projects/cribbage/**)` and `Bash(langsmith:*)` if irrelevant.
 - The OTLP endpoint `http://127.0.0.1:1738` has no collector here. Remove `CLAUDE_CODE_ENABLE_TELEMETRY` and the three `OTEL_*` entries unless restoring that collector separately.
-- Keep `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` for this Herdr setup. Verify detection in section 11.
+- Do not set `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` in `settings.json`; remove it when merging an existing file. The same switch also stops Claude Code's OSC 7501 status reports, and herdr-core lists agents from those reports, so Claude would never appear in the Herdr app's Agents list. Keep titles off everywhere else (Ghostty, the legacy Herdr) from `~/.zshenv` instead. Run `save_existing "$HOME/.zshenv"`, then add this once:
+
+  ```zsh
+  # Herdr app terminals (HC_TERMINAL_ID set) need Claude Code's status reports.
+  if [ -z "${HC_TERMINAL_ID:-}" ]; then
+    export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
+  fi
+  ```
+
+  Make both changes together, here and when restoring from a backup. With the key still in `settings.json`, Claude never appears as an agent; without the snippet, terminal titles come back in Ghostty. Claude sessions already running keep the old setting until restarted. Section 11 checks that Claude appears as an agent.
 - Check support for the selected `model`, `effortLevel`, `modelSettings`, `tui`, and permission mode in the installed Claude version. Choose accessible models; document any substitutions.
 - `enabledPlugins` is a preference, not an installer. Disable unresolved plugin entries until section 8 installs them. Leave Telegram disabled.
 - Review the permission bypass prompt settings together with the alias decision in section 1. Preserve existing deny rules.
@@ -295,57 +294,75 @@ put_file "$AI_ENV_REPO/codex/config/themes/claude-nerd.tmTheme" "$HOME/.codex/th
 
 Keep the shared instruction link from section 4. Check that the configured `gpt-6-astra` model is available to the logged-in account. The `features.hooks = true` preference neither installs hooks nor supplies the instruction bridge. Do not claim skill discovery automation is active merely because this preference is enabled.
 
-For stock Codex, `/model` is the model picker. Section 9 installs the managed patch for Cmd+E and full Cmd+Shift+E cycling. Section 6 automatically selects a compatible effort key for each session.
+For stock Codex, `/model` is the model picker. Section 9 installs the managed patch for Cmd+E and full Cmd+Shift+E cycling. In the Herdr app, section 6's `herdr-app-cycle-effort` automatically selects a compatible effort key for each session.
 
-## 6. Install all Herdr runtime dependencies before its config
+## 6. Install the Herdr app setup
 
-### Helpers, library, shortcuts, and Claude detector
+Everything in this section is copied, never symlinked. [`herdr-app/README.md`](herdr-app/README.md#copies-not-symlinks) records the tests behind that. Install only the owner's files. On its first start the app writes everything else itself: `AGENTS.md`, type files, icons, its shipped mods and layouts, and its state. **Never copy Herdr's shipped mods** (`agents`, `files`, `tabs`, `pane`, `workspace-chrome` and the rest), not even whole folders from another machine. One that differs from the shipped files (a missing subfolder counts) is moved to `<mod>-edited`, and the stock one is reinstalled.
+
+### Helper scripts
 
 ```sh
-for name in herdr-agent-view herdr-move-tab herdr-arrange herdr-codex-usage; do
-  put_file "$AI_ENV_REPO/herdr/helpers/$name" "$HOME/.local/bin/$name" || break
+for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid; do
+  put_file "$AI_ENV_REPO/herdr-app/bin/$name" "$HOME/.local/bin/$name" || break
   chmod +x "$HOME/.local/bin/$name"
 done
-for name in arrange.py test_arrange.py test_live.py order_cases.py README.md; do
-  put_file "$AI_ENV_REPO/herdr/lib/herdr-arrange/$name" "$HOME/.local/lib/herdr-arrange/$name" || break
-done
-put_file "$AI_ENV_REPO/herdr/shortcuts/cycle-effort.py" "$HOME/.config/herdr/shortcuts/cycle-effort.py"
-put_file "$AI_ENV_REPO/herdr/shortcuts/test_cycle_effort.py" "$HOME/.config/herdr/shortcuts/test_cycle_effort.py"
-new_config "$AI_ENV_REPO/herdr/agent-detection/claude.toml" "$HOME/.config/herdr/agent-detection/claude.toml"
 ```
 
-If any loop failed, resolve it before proceeding. The arranger needs its adjacent library at `~/.local/lib/herdr-arrange`; copying only its launcher will fail.
+They need `python3`, `/usr/sbin/lsof`, `/usr/bin/pbcopy` and `/usr/bin/open`; everything but Python ships with macOS. The mods call them by their `~/.local/bin` paths, and the scripts find `hc` on `PATH`, then in `~/.local/bin`.
 
-**Codex compatibility:** the router identifies the foreground executable against
-`~/.local/share/codex-shortcuts/capabilities.json`. Recognized managed builds get
-full cycling; stock or unrecognized sessions get Alt+. (increase only, without
-Max/Ultra wrapping). Missing or unreadable metadata uses that fallback. There is
-no manual router edit or temporary PID list. Install the managed build in section 9.
+**Codex effort key.** For Codex, Cmd+Shift+E sends the full-cycle `alt+shift+e` only when `~/.local/share/codex-shortcuts/capabilities.json` identifies the running executable as an unchanged managed build. Section 9's managed shortcut installation writes that file. Without it, every Codex session gets `alt+.`, which only increases effort and stops at the top.
 
-
-### Attention plugin
+### Config, theme, layout and mods
 
 ```sh
-mkdir -p "$HOME/.config/herdr/plugins/local/herdr-attention"
-for name in herdr-plugin.toml notify.py test_notify.py README.md; do
-  put_file "$AI_ENV_REPO/herdr/extensions/custom/herdr-attention/$name" \
-    "$HOME/.config/herdr/plugins/local/herdr-attention/$name" || break
-done
+new_config "$AI_ENV_REPO/herdr-app/home/settings.json" "$HOME/.config/herdr-app/settings.json"
+new_config "$AI_ENV_REPO/herdr-app/home/keys.json" "$HOME/.config/herdr-app/keys.json"
+while IFS= read -r -d '' source; do
+  relative="${source#herdr-app/home/}"
+  case "$relative" in settings.json|keys.json) continue ;; esac
+  put_file "$AI_ENV_REPO/$source" "$HOME/.config/herdr-app/$relative" || break
+done < <(git -C "$AI_ENV_REPO" ls-files -z -- herdr-app/home/)
 ```
 
-This plugin requires Python, `terminal-notifier`, `/usr/bin/afplay`, and `/System/Library/Sounds/Ping.aiff`. Set the manifest's Python command to the absolute Homebrew Python path if the server cannot resolve it. The plugin must be linked and enabled in section 7 **before** applying the config that disables built-in alerts.
+The loop installs the theme, the `main-plus` layout and twelve mods. Only tracked files are copied, so a `gpui-kit.d.ts` or `jsconfig.json` that a check left in the checkout is skipped. When merging an existing `keys.json`, keep its sections and ask before replacing a key the owner already uses. The `layout:main-plus` section applies only while that layout shows.
 
-### Build copy-search
+`main-plus` needs the `git-graph` and `automations` mods below; until they are installed, its Graph and Automations panels report errors.
+
+### Git graph, automations panel and CLI
+
+These come from their authors' repositories, pinned to the versions this export was tested with, rather than bundled. Both are MIT. Mods are trusted code with command and network access, so read each repository's README and the mod folder you copy first. git-graph runs `git` in the focused repository, and at most once a day asks GitHub's public releases API whether a newer version exists. Set `CHECK = false` in its `update.js` to stop that. The automations panel runs the `herdr-automations` CLI.
 
 ```sh
-(
-  cd "$AI_ENV_REPO/herdr/extensions/custom/herdr-copy-search" || exit
-  cargo build --release --locked
-)
-test -x "$AI_ENV_REPO/herdr/extensions/custom/herdr-copy-search/target/release/herdr-copy-search"
+export AI_ENV_UPSTREAM="$(mktemp -d "${TMPDIR:-/tmp}/ai-env-upstream.XXXXXX")"
+git clone --quiet https://github.com/rabeeh-ta/herdr-git-graph "$AI_ENV_UPSTREAM/herdr-git-graph"
+git -C "$AI_ENV_UPSTREAM/herdr-git-graph" checkout --quiet --detach b70e79571a8bdf3f711f054ba6be81c8ee7ea9bf
+git -c advice.detachedHead=false clone --quiet --depth 1 --branch v0.11.3 \
+  https://github.com/DnzzL/herdr-automations "$AI_ENV_UPSTREAM/herdr-automations"
+test "$(git -C "$AI_ENV_UPSTREAM/herdr-automations" rev-parse HEAD)" = 983aec905a49e678d8694a9ca70de77ea3f728c5
 ```
 
-`herdr plugin link` does not build it. Keep the built checkout in place. Use this bundled source, not an upstream reinstall that may replace local behavior. Pane-mover needs Node but no npm dependencies; Openr needs Python, zsh, jq, and fzf. Registration follows in section 7.
+After reviewing them, copy each mod folder whole. If a destination already exists, the `test` stops the copy; compare that folder with upstream instead of overwriting it:
+
+```sh
+test ! -e "$HOME/.config/herdr-app/mods/git-graph" &&
+  cp -R "$AI_ENV_UPSTREAM/herdr-git-graph/mods/git-graph" "$HOME/.config/herdr-app/mods/git-graph"
+test ! -e "$HOME/.config/herdr-app/mods/automations" &&
+  cp -R "$AI_ENV_UPSTREAM/herdr-automations/app/mods/automations" "$HOME/.config/herdr-app/mods/automations"
+```
+
+The automations CLI's `scripts/install.sh` downloads the release's prebuilt binary into the clone's `bin/` and checks it against the release's `checksums.txt`. With no prebuilt binary for the machine, or a checksum mismatch, it builds from the pinned source instead, which needs Go. Its output says which happened. Install the binary as a copy; the panel looks for it on `PATH`, then in `~/.local/bin`:
+
+```sh
+(cd "$AI_ENV_UPSTREAM/herdr-automations" && sh scripts/install.sh)
+put_file "$AI_ENV_UPSTREAM/herdr-automations/bin/herdr-automations" "$HOME/.local/bin/herdr-automations"
+chmod +x "$HOME/.local/bin/herdr-automations"
+"$HOME/.local/bin/herdr-automations" version
+new_config "$AI_ENV_REPO/herdr-app/automations/automations.yaml" \
+  "$HOME/.config/herdr/plugins/config/dnzzl.automations/automations.yaml"
+```
+
+`version` should print `0.11.3`. The starter `automations.yaml` only sets `backend: hc`, which runs automations in the Herdr app, and defines none. Add them with `herdr-automations add` or the panel. That path is the CLI's default config location, the same one the legacy Herdr plugin uses. Nothing runs on a schedule until section 10's optional login service is installed. Remove `$AI_ENV_UPSTREAM` afterwards.
 
 ## 7. Install Pi, shell configuration, then activate the terminal stack
 
@@ -437,7 +454,7 @@ source "$HOME/.config/ai-dev-environment/ghostty-aliases.zsh"
 
 If the section 1 alias choice authorized bypass shortcuts, also install `claude-code/config/aliases.sh` and `codex/config/aliases.sh` into this directory and source them once from `~/.zshrc`. Otherwise leave those two aliases inactive and record the choice.
 
-Source the three files in the current shell and run `rehash`. Check `whence -a pi node npm codex claude herdr`: `pi` should be the shell function backed by `~/.local/bin/pi`, and its wrapper should use the recorded compatible Node regardless of a project's nvm version. Never set `PI_BIN` to `pi-update`, which would recurse. `pi update` deliberately routes through `pi-update` and needs Bun plus the installed tests.
+Source the three files in the current shell and run `rehash`. Check `whence -a pi node npm codex claude herdr-app hc`: `pi` should be the shell function backed by `~/.local/bin/pi`, and its wrapper should use the recorded compatible Node regardless of a project's nvm version. Never set `PI_BIN` to `pi-update`, which would recurse. `pi update` deliberately routes through `pi-update` and needs Bun plus the installed tests.
 
 ### Ghostty
 
@@ -448,47 +465,31 @@ put_file "$AI_ENV_REPO/ghostty/helpers/ghostty-quad" "$HOME/.local/bin/ghostty-q
 chmod +x "$HOME/.local/bin/ghostty-dual" "$HOME/.local/bin/ghostty-quad"
 ```
 
-Check for a second config under `~/Library/Application Support/com.mitchellh.ghostty/`; consolidate conflicting settings instead of assuming only the XDG file loads. Confirm `~/Projects` exists or change `working-directory`. Check the installed theme and font names in Ghostty. Its exported `keybind = clear` removes default bindings; the intended split/tab/navigation shortcuts work inside Herdr. Outside Herdr, use Ghostty's menus or the optional layout helpers.
+Check for a second config under `~/Library/Application Support/com.mitchellh.ghostty/`; consolidate conflicting settings instead of assuming only the XDG file loads. Confirm `~/Projects` exists or change `working-directory`. Check the installed theme and font names in Ghostty. Its exported `keybind = clear` removes default bindings. Tab, split and navigation chords belong to the Herdr app now; in Ghostty itself, use its menus or the layout helpers.
 
 Launch Ghostty. Restart it after font installation; open a new terminal for padding changes. The titlebar is hidden, so there are no traffic-light buttons; Option-drag the frame to move the window. Cmd+Shift+, reloads config, but is not a substitute for opening a new surface when required.
 
-The `ghostty-dual` and `ghostty-quad` helpers use AppleScript and need a Ghostty version with those scripting APIs. Let macOS handle any Automation consent. Verify both with a scratch directory. Their directory is interpolated into AppleScript; use a simple path without embedded quotes or backslashes.
+The `ghostty-dual` and `ghostty-quad` helpers (the `2x2` and `4x4` aliases) first try `herdr-app-grid` from section 6. Run in a Herdr app terminal, they open a new tab in that space, split side by side or 2x2. Anywhere else `herdr-app-grid` exits 3 and they open a Ghostty window instead. That fallback uses AppleScript and needs a Ghostty version with those scripting APIs. Let macOS handle any Automation consent. Verify both paths with a scratch directory. The directory is interpolated into AppleScript; use a simple path without embedded quotes or backslashes.
 
-### Start Herdr and register plugins
+### Start the Herdr app
 
-Start `herdr` in the new Ghostty terminal, using its existing/default config initially. Keep the setup shell available in a separate pane or terminal. Register the local plugins and the pinned external layout plugin:
-
-```sh
-herdr plugin link "$HOME/.config/herdr/plugins/local/herdr-attention"
-herdr plugin enable mitchnick.attention
-herdr plugin link "$AI_ENV_REPO/herdr/extensions/custom/herdr-pane-mover"
-herdr plugin enable osamahbeig.pane-mover
-herdr plugin link "$AI_ENV_REPO/herdr/extensions/custom/herdr-openr"
-herdr plugin enable openr
-herdr plugin link "$AI_ENV_REPO/herdr/extensions/custom/herdr-copy-search"
-herdr plugin enable copy-search
-herdr plugin install edouard-andrei/herdr-layout-tools --ref 826364134071e470f1d54e69b8ab8dfd49972477
-herdr plugin enable edi.layout-tools
-herdr plugin list
-```
-
-Verify all five IDs are enabled. Do not follow the original Openr README's upstream quick-start or automatic key installer; the bundled adaptation supplies Codex transcript support and this repo already supplies its keybindings. Likewise use the bundled pane-mover: its `open-tabs` action is a local addition.
-
-**Only after attention is enabled**, install/merge the Herdr config:
+Open Herdr from Applications, or run `herdr-app` from a shell. A Finder launch loads the login shell's `PATH`, so the shell files above must already be in place. Finish its welcome screens. On this first start the app writes its own files around the ones from section 6. From a shell (a Herdr terminal is fine):
 
 ```sh
-new_config "$AI_ENV_REPO/herdr/config/config.toml" "$HOME/.config/herdr/config.toml"
-herdr config check
-herdr server reload-config
-herdr server reload-agent-manifests
-"$HOME/.local/bin/herdr-agent-view" rest
+herdr-app do layout.switch --name main-plus
+for mod in tab-move-left tab-move-right pane-next pane-prev pane-mover pane-mover-tabs \
+    effort-cycle arrange-wide arrange-laptop link-picker scrollback-search tabs-plus \
+    git-graph automations; do
+  herdr-app check "$HOME/.config/herdr-app/mods/$mod" || break
+done
+find "$HOME/.config/herdr-app" -maxdepth 1 -name '*.error' -print
+herdr-app status | jq -e '.layout == "main-plus" and (.errors | length) == 0'
+jq -e '.theme == "monokai-pro-spectrum" and .font == "MesloLGS Nerd Font Mono"' "$HOME/.config/herdr-app/settings.json"
 ```
 
-Before reloading, verify the absolute Python path in the Cmd+Shift+E command and the socket paths in the arranger commands. The export targets the default local `~/.config/herdr/herdr.sock`. For another session, update those paths; agent-view and tab-movement helpers also target the default local socket. Do not apply default-session commands to an unrelated session.
+Every check should pass, `find` should print nothing, and both `jq` checks should print `true`. A broken file keeps its last good version running and writes the reason to `<name>.error`, so a working window does not prove a file loaded. If the welcome changed `settings.json`, merge the exported values back; the app applies them live. `ctrl-alt-shift-escape` is the app's escape hatch: it sets the shown layout and `keys.json` aside as `*.reset-<time>` and returns to the stock `main` layout. To recover, restore `keys.json` from the export and switch layouts again.
 
-`herdr-agent-view rest` sets transient stable ordering; repeat after a server restart. The detector override shadows upstream Claude rules. On a newer Herdr version, compare with its upstream manifest and merge relevant updates or retire the override if the fix is already present.
-
-Config and detector reloads need no server restart. For an already-running server with a stale PATH, prefer absolute interpreters in manifests/bindings. A planned server environment refresh is separate and must preserve the user's running work.
+Herdr sends anonymous daily usage counts by default; Settings → Privacy shows each report, or set `"telemetry": false` in `settings.json`. The exported settings leave it on, as the source machine does. Record the owner's choice.
 
 ## 8. Authenticate and reconcile external packages
 
@@ -550,7 +551,7 @@ GitKraken's local marketplace is excluded; obtain its source separately before e
 
 ## 9. Optional custom binaries
 
-Complete each chosen build and its checks; otherwise record stock behavior. A patch file on disk is not an installed feature. Build in separate unused directories. Never apply the historical `native-search-scrollback-v0.8.2.patch` to 0.9.0 or downgrade a server for it. Herdr 0.9.0 already has native literal search via Ctrl+B, [, /; copy-search adds regex and extraction.
+Complete each chosen build and its checks; otherwise record stock behavior. A patch file on disk is not an installed feature. Build in separate unused directories.
 
 ### Claude's single-line footer
 
@@ -591,71 +592,26 @@ previous release; see the recovery steps in the linked guide. Do not replace
 npm's executable or symlink it to a custom
 binary: that was the cause of the September 18 shortcut regression.
 
-### Herdr machine headers and pinned usage section
-
-Use either the machine-header patch alone or both patches in this order. The following builds both; omit the two usage-patch application commands for headers only:
-
-```sh
-brew install zig@0.15
-rustup toolchain install 1.96.1
-export ZIG="$(brew --prefix zig@0.15)/bin/zig"
-"$ZIG" version
-git clone --branch v0.9.0 --single-branch https://github.com/herdrdev/herdr.git "$HOME/Projects/herdr-custom-source"
-(
-  set -e
-  cd "$HOME/Projects/herdr-custom-source"
-  git checkout --detach b99002ac99b09e00b4ca692436cb15a6b0d676f1
-  git apply --check "$AI_ENV_REPO/herdr/patches/machine-headers-v0.9.0.patch"
-  git apply "$AI_ENV_REPO/herdr/patches/machine-headers-v0.9.0.patch"
-  git apply --check "$AI_ENV_REPO/herdr/patches/usage-section-v0.9.0.patch"
-  git apply "$AI_ENV_REPO/herdr/patches/usage-section-v0.9.0.patch"
-  cargo +1.96.1 fmt --check
-  just build
-  cargo +1.96.1 test --release --locked --bin herdr client::shell
-  cargo +1.96.1 test --release --locked --bin herdr config::sidebar
-)
-```
-
-Stop if Zig is not 0.15.2; obtain the pinned release before building. The checkout's toolchain file selects Rust 1.96.1 for `just build`. Keep patch files/guides available in this checkout or copy the selected pairs into `~/.config/herdr/patches` for maintenance.
-
-Install to a **new** executable path to avoid macOS signature failures from in-place overwrites:
-
-```sh
-test ! -e "$HOME/.local/bin/herdr-custom-0.9.0"
-install -m 755 "$HOME/Projects/herdr-custom-source/target/release/herdr" "$HOME/.local/bin/herdr-custom-0.9.0"
-"$HOME/.local/bin/herdr-custom-0.9.0" --version
-cp -pL "$(command -v herdr)" "$AI_ENV_BACKUP/herdr-before-custom"
-save_existing "$HOME/.local/bin/herdr"
-ln -sfn "$HOME/.local/bin/herdr-custom-0.9.0" "$HOME/.local/bin/herdr"
-```
-
-Use a new backup filename for subsequent builds; do not overwrite the stock copy with a custom binary. These client patches match the pinned server's protocol. Do not assume a custom 0.9.0 client can attach to a newer server; compare versions/protocol first. Keep running panes intact and record any required planned migration.
-
-For the pinned usage section, move the four custom-token rows (5h, 7d, fable, openai) from `[ui.sidebar.spaces].rows` into a new `[ui.sidebar.usage]` with `label = "usage"`. Keep the `state_icon`/`workspace` row in spaces. Use the same token names from the exported config. Without a token publisher, no usage block appears. Headers-only and stock binaries must not receive this new table.
-
-Run `herdr config check`. Use the sidebar **menu → detach**, then launch `~/.local/bin/herdr` to load the client. Config reload cannot load compiled rendering changes. No server restart is needed for a compatible client patch. An older stock server may warn that `ui.sidebar.usage` is unknown on config reload; clearing that server warning is a separate planned upgrade. Detailed rendering/compatibility evidence lives in [the usage patch notes](herdr/patches/usage-section-v0.9.0.md).
+The legacy Herdr 0.9.0 machine-header and usage-section builds are in [Appendix L4](#l4-machine-headers-and-pinned-usage-section-optional-build). The Herdr app needs no custom build.
 
 ## 10. Finish optional integrations and account for excluded pieces
 
-### Account usage
+### Scheduled automations (optional)
 
-The actual export **does include** `pi/helpers/herdr-usage`, despite older Herdr prose saying the publisher is excluded. It does **not** include the LaunchAgent that schedules it. That publisher reads Claude login credentials and Pi's OpenAI login when refreshing usage; never run it with shell tracing. Its default Pi search only checks nvm directories, so supply `PI_BIN` explicitly for the wrapper installed here.
-
-To enable usage, confirm logins and Herdr's socket first, then set absolute executable paths in the private shell environment or runner:
+Section 6 installed the automations CLI and panel. Automations run on their schedule only while `herdr-automations daemon` runs; the Herdr app has no plugin startup hook to start it. The CLI installs it as a login service. Run this from the final shell environment, because the service records this shell's `PATH` to find `hc`, `git` and the agents:
 
 ```sh
-export HERDR_BIN="$HOME/.local/bin/herdr"
-export PI_BIN="$HOME/.local/bin/pi"
-export CODEX_BIN="$(command -v codex)"
-"$HOME/.local/bin/herdr-codex-usage"
-"$HOME/.local/bin/herdr-usage"
+"$HOME/.local/bin/herdr-automations" service status
+"$HOME/.local/bin/herdr-automations" service install
+plutil -lint "$HOME/Library/LaunchAgents/dev.dnzzl.herdr-automations.plist"
+"$HOME/.local/bin/herdr-automations" service status
 ```
 
-Use the Codex collector **before** the publisher: it updates `~/.pi/agent/openai-usage-cache.json` through Codex's login, allowing the publisher's Pi fallback to stay unused while that cache is fresh. Claude's separate usage cache is `~/.claude/usage-cache.json`. No account data belongs in the repo. Check cache freshness and rendered tokens without printing credentials or raw account payloads. These internal usage endpoints can change; keep the feature outstanding if real responses no longer match the helper.
+It writes `~/Library/LaunchAgents/dev.dnzzl.herdr-automations.plist` and starts the scheduler now and at every login. The plist holds absolute paths and the whole `PATH`, so never copy it from another machine. Regenerate it with `service install` after changing where Node or the agents live. Its log is `~/.local/state/herdr/plugins/dnzzl.automations/daemon.log`. Without the service, the panel's Run now still works and nothing runs on a schedule. Both are valid choices; record which. `service uninstall` removes it and leaves `automations.yaml` and the run history.
 
-For periodic updates, create a private executable runner under `~/.local/bin` that sources `~/.config/ai-dev-environment/shell.zsh`, exports the absolute `HERDR_BIN`, `PI_BIN`, `CODEX_BIN`, `PI_NODE_BIN`, `PI_CLI_PATH`, and `HERDR_SOCKET_PATH`, runs the collector first, then the publisher. Give it an explicit PATH including the selected Node, Homebrew Python/jq, and system tools. A LaunchAgent does not inherit the interactive terminal environment.
+### Account usage
 
-Create a user plist under `~/Library/LaunchAgents/` with a unique label, `KeepAlive` true, `RunAtLoad` true, and `ProgramArguments` of `/bin/bash -c 'while true; do <runner>; sleep 120; done'` with the runner's absolute path. Do not use `StartInterval`: macOS can silently stop re-arming it while `launchctl` still reports the job as healthy. With the loop, the job has a live PID, so `launchctl print gui/$(id -u)/<label>` showing a `pid` is a real health check. Use `plutil -lint`, then `launchctl bootstrap gui/$(id -u) <absolute-plist-path>` and `launchctl kickstart gui/$(id -u)/<label>`. Replace the angle-bracket placeholders first. Record label/path for rollback; do not overwrite an existing job. Verify a scheduled run refreshes the cache and visible tokens. The publisher returns early without a socket or workspace, so exit status alone is insufficient. It publishes on the selected/last local workspace; a patched sidebar can display those tokens once. Stock config displays them in workspace rows.
+The exported usage publisher (`pi/helpers/herdr-usage` with `herdr/helpers/herdr-codex-usage`) feeds the **legacy** Herdr sidebar; [Appendix L5](#l5-account-usage-in-the-sidebar-optional) covers it. A Herdr app usage widget is being built on the source machine and is not exported yet. Record account usage in the Herdr app as unavailable.
 
 ### Session archiving
 
@@ -751,53 +707,62 @@ For manual Codex project skill discovery, inspect `.claude/skills` at each appli
 
 ### File and dependency checks
 
-Run in a fresh Ghostty shell so persisted environment settings are exercised:
+Run in a fresh shell, a Herdr app terminal or Ghostty, so persisted environment settings are exercised:
 
 ```sh
-whence -a claude codex pi herdr node npm python3 bun
+whence -a claude codex pi herdr-app hc node npm python3 bun
 claude --version
 codex --version
 pi --version
-herdr --version
+herdr-app --version
+hc --version
 pi list
-herdr plugin list
-herdr config check
 zsh -n "$HOME/.config/ai-dev-environment/shell.zsh"
 zsh -n "$HOME/.config/ai-dev-environment/pi-wrapper.zsh"
 jq empty "$HOME/.claude/settings.json" "$HOME/.claude/keybindings.json" \
-  "$HOME/.pi/agent/settings.json" "$HOME/.pi/agent/keybindings.json" "$HOME/.pi/settings.json"
+  "$HOME/.pi/agent/settings.json" "$HOME/.pi/agent/keybindings.json" "$HOME/.pi/settings.json" \
+  "$HOME/.config/herdr-app/settings.json" "$HOME/.config/herdr-app/keys.json" \
+  "$HOME/.config/herdr-app/themes/monokai-pro-spectrum.json" "$HOME/.config/herdr-app/layouts/main-plus.json"
 python3 - <<'PY'
 from pathlib import Path
 import tomllib
-for name in ('.codex/config.toml', '.config/herdr/config.toml'):
-    with (Path.home() / name).open('rb') as f:
-        tomllib.load(f)
+with (Path.home() / '.codex/config.toml').open('rb') as f:
+    tomllib.load(f)
 canonical = (Path.home() / '.claude/CLAUDE.md').resolve(strict=True)
 for name in ('.codex/AGENTS.md', '.pi/agent/AGENTS.md'):
     assert (Path.home() / name).resolve(strict=True) == canonical, name
 print('TOML and shared instruction links OK')
 PY
+herdr-app status | jq -e '.layout == "main-plus" and (.errors | length) == 0'
+jq -r '.[] | .[] | select(startswith("mod.open:")) | ltrimstr("mod.open:")' "$HOME/.config/herdr-app/keys.json" |
+  sort -u | while IFS= read -r mod; do
+    test -f "$HOME/.config/herdr-app/mods/$mod/main.js" || echo "keys.json opens a missing mod: $mod"
+  done
+for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid \
+    herdr-automations ghostty-quad ghostty-dual; do
+  test -x "$HOME/.local/bin/$name" || echo "missing: $name"
+done
 ```
 
-TOML/JSON parsing proves syntax, not support for every preference. Open both Claude and Codex and resolve startup/config warnings. If the installed Codex advertises `--strict-config`, use it for that startup check. Check Ghostty's config diagnostics and font/theme availability in the app. Confirm every active `keys.command` in Herdr resolves to an installed helper or enabled plugin action.
+TOML/JSON parsing proves syntax, not support for every preference. Open both Claude and Codex and resolve startup/config warnings. If the installed Codex advertises `--strict-config`, use it for that startup check. Check Ghostty's config diagnostics and font/theme availability in the app. The `keys.json` loop and the `missing:` loop must print nothing; the shipped `picker` mod exists once the app has started.
 
 Run the export's focused offline checks:
 
 ```sh
 cd "$AI_ENV_REPO"
-python3 -B -m unittest discover -s herdr/extensions/custom/herdr-attention -p test_notify.py -v
-python3 -B -m unittest discover -s herdr/lib/herdr-arrange -p test_arrange.py -v
-python3 -B -m unittest discover -s herdr/agent-detection -p test_claude.py -v
-python3 -B -m unittest discover -s herdr/extensions/custom/herdr-openr -p 'test_*.py' -v
-python3 -B -m unittest discover -s herdr/shortcuts -p test_cycle_effort.py -v
-python3 -B -m unittest discover -s herdr/helpers -p test_codex_usage.py -v
+for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc; do
+  "$HOME/.local/bin/$name" --help >/dev/null || echo "failed: $name"
+done
+bash -n "$HOME/.local/bin/herdr-app-grid"
+bash -n "$HOME/.local/bin/ghostty-quad"
+bash -n "$HOME/.local/bin/ghostty-dual"
+(unset HC_TERMINAL_ID; "$HOME/.local/bin/herdr-app-grid" quad "$HOME"; test $? -eq 3) && echo 'grid falls back outside herdr-app'
 python3 -B -m unittest discover -s claude-code/custom/statusline -p test_footer_patch.py -v
 pi-update --test-only
 (cd "$HOME/.pi/agent/extensions/claude-compat" && npm test)
-(cd "$AI_ENV_REPO/herdr/extensions/custom/herdr-copy-search" && cargo test --locked)
 ```
 
-The router tests cover managed and stock sessions, replaced binaries, and failed detection. Verify the shortcut in a resumed managed session as well. The notification and usage tests mock external delivery/API behavior; passing them does not prove real banners or live account access. The footer tests do not prove a newly released Claude binary matches its byte patterns.
+`--help` proves each helper's interpreter and imports resolve; it does not drive an agent. `herdr-app-grid` must exit 3 outside a Herdr terminal, which is what sends `4x4`/`2x2` to Ghostty there. The footer tests do not prove a newly released Claude binary matches its byte patterns.
 
 Create an empty scratch project and run the compatibility smoke test against it:
 
@@ -806,33 +771,36 @@ export AI_ENV_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/ai-env-smoke.XXXXXX")"
 (cd "$HOME/.pi/agent/extensions/claude-compat" && npm run smoke -- "$AI_ENV_SCRATCH")
 ```
 
-This checks extension loading/command registration, not live MCP or model behavior. For stronger arranger coverage, `python3 -B herdr/lib/herdr-arrange/test_live.py` starts its own named server and PTY; run only when ready for that isolated integration test. It must not target the user's active session.
+This checks extension loading/command registration, not live MCP or model behavior.
 
 ### Interactive acceptance checklist
 
-Use scratch panes and harmless drafts. Record actual observations, not just successful process exit codes.
+Use scratch spaces, tabs and harmless drafts. Record actual observations, not just successful process exit codes. [SHORTCUTS.md](SHORTCUTS.md) is the complete key reference.
 
-- [ ] All three harnesses open in Ghostty/Herdr with no unresolved config or extension errors, correct theme, and a usable authenticated model. If a minimal model request is made, it returns successfully; otherwise model execution remains unverified.
+- [ ] All three harnesses open in Herdr app terminals with no unresolved config or extension errors, correct theme, and a usable authenticated model. If a minimal model request is made, it returns successfully; otherwise model execution remains unverified.
 - [ ] Claude statusline displays directory/branch/context/model/effort as applicable; font glyphs are legible. Pi footer and its active-pane cursor work without duplicate cursors when changing focus.
-- [ ] Pi `/model-effort` and Cmd+E open the model/effort picker. Claude Cmd+E opens its picker. Codex `/model` works; Cmd+E also works with the managed patch.
-- [ ] Cmd+Shift+E changes effort exactly once, preserves the current draft/cursor/model, and behaves correctly in each harness. Stock Codex's limited route is distinguished from patched full wrapping. Canceling a picker preserves the draft.
-- [ ] Herdr Cmd+D / Cmd+Shift+D split; Cmd+T creates a tab; Cmd+] / Cmd+[ move focus; rename, tab movement, workspace selection, and agent navigation work. Use [SHORTCUTS.md](SHORTCUTS.md) as the complete shortcut reference. Prefix fallbacks work, especially over SSH where native Cmd chords may not survive.
-- [ ] Pane-mover Cmd+M opens the tab list; Cmd+Shift+M opens the root menu. A scratch pane moves successfully. Main-grid/equalize/editor actions resolve through layout-tools.
-- [ ] Cmd+Shift+R and Cmd+Ctrl+R arrange scratch panes into wide/laptop layouts without losing running processes; repeating the same layout is harmless.
-- [ ] Cmd+K opens Openr in a Claude/Codex session containing a harmless assistant URL. Enter opens, Ctrl+Y copies, Escape closes. Test mouse interaction physically if required. A missing local transcript falls back to visible text; do not infer remote transcript access.
-- [ ] Cmd+Shift+F searches through copy-search; Cmd+Shift+C opens its copy mode; Cmd+Shift+X extracts tokens; copying reaches the macOS clipboard. Ctrl+B, [, / still provides native literal search. Ghostty Cmd+F searches the outer terminal, not the whole Herdr pane history.
-- [ ] During work, idle, and a harmless input/approval prompt, the sidebar classifies states correctly. Each sustained blocked cycle produces **one** audible Ping and **one** visible popup, including in a focused pane. Completion produces neither. Check terminal-notifier notification permissions and macOS Focus if presentation fails. Clicking the popup activates Ghostty.
-- [ ] Chosen optional features have their own observed result: footer patch, header/usage rendering, scheduled usage refresh, local archive destination, skills, and restored MCPs. Inactive options have explicit reasons.
-- [ ] After opening a new terminal and reattaching Herdr, PATH, wrapper, themes, plugin links, and instructions still work. Reapply `herdr-agent-view rest` after an actual server restart.
+- [ ] Pi `/model-effort` and Cmd+E open the model/effort picker. Claude Cmd+E opens its picker. Codex `/model` works; Cmd+E also works with the managed patch. In the Herdr app, Cmd+E reaches the terminal as Esc+E.
+- [ ] Cmd+Shift+E changes effort exactly once, preserves the current draft/cursor/model, and behaves correctly in each harness. Stock Codex's limited route is distinguished from patched full wrapping. Canceling a picker preserves the draft. A failure is logged to `$TMPDIR/herdr-app-cycle-effort.log`.
+- [ ] Cmd+D / Cmd+Shift+D split; Cmd+T creates a tab; Cmd+] / Cmd+[ cycle panes; Cmd+Ctrl+Arrow moves focus; Cmd+Shift+Arrow swaps; Cmd+Alt+Shift+Left/Right moves a tab one slot; Cmd+1..9 and Cmd+Alt+1..9 select tabs and spaces; Cmd+Shift+P and Cmd+G open the picker; Cmd+B toggles the sidebar.
+- [ ] Pane mover: Cmd+M opens the tab list and Cmd+Shift+M the full menu. A scratch pane moves to another tab and to a new space, and its program keeps running.
+- [ ] Cmd+Shift+R and Cmd+Ctrl+R arrange a scratch tab of 3–5 panes into wide/laptop columns without restarting any program; repeating is harmless; a failure shows a toast and changes nothing.
+- [ ] Cmd+K in a Claude or Codex session that mentioned a harmless URL lists it; Enter opens, Ctrl+Y copies, Escape closes. In a plain shell it reads the screen instead.
+- [ ] Cmd+F searches the focused terminal's scrollback; Enter copies the line, Shift+Enter copies it with context, `/pattern/` is a regular expression.
+- [ ] `4x4` and `2x2` in a Herdr terminal open a new 2x2 or side-by-side tab in that space; in Ghostty they open a Ghostty window.
+- [ ] In `main-plus`, the Graph button and Cmd+Shift+G open git-graph for the focused repository; the Automations button opens the panel, which lists `automations.yaml` without an error. The scheduler state matches the section 10 choice.
+- [ ] A Claude Code session started after setup in a Herdr terminal appears in the sidebar's Agents list, and `hc get <its address> --json | jq .status` shows `"app": "claude-code"` with a state. If it is missing, check `env | grep CLAUDE_CODE_DISABLE_TERMINAL_TITLE` in that terminal (section 4).
+- [ ] During work, idle and a harmless input/approval prompt, the sidebar shows each agent's state. Sounds are off in the exported settings; record what a blocked agent shows.
+- [ ] Chosen optional features have their own observed result: footer patch, scheduled automations, local archive destination, skills, and restored MCPs. Inactive options have explicit reasons.
+- [ ] Quitting and reopening the app keeps every terminal running and returns to `main-plus` with the same keys. After opening a new terminal, PATH, wrapper, themes and instructions still work.
 
-If a layout operation fails with panes in an `arranging panes` tab, keep that tab open and recover with pane-mover. The arranger writes recovery/error files under the system temporary directory. Do not use `layout.apply` for recovery; it can recreate terminals.
+If an arrange fails, the toast says why and nothing was written. The previous layout document is kept in `~/.local/state/herdr-app-arrange/before.json`.
 
 ## 12. Handoff, rollback, and future updates
 
 Leave a private setup report containing:
 
-1. Machine/OS/architecture, repo revision, application/runtime versions, resolved executable paths, and plugin/package versions.
-2. Backup location, files created/merged, deliberate deviations from the export, and permanent linked-plugin checkout path.
+1. Machine/OS/architecture, repo revision, application/runtime versions (including Herdr app, herdr-core and `herdr-automations`), resolved executable paths, and plugin/package versions.
+2. Backup location, files created/merged, deliberate deviations from the export, the permanent checkout path, and whether the automations login service and Herdr telemetry are on.
 3. Each section marked **verified**, **installed but unverified**, **inactive by choice**, or **blocked**, with the specific missing prerequisite for any blocker.
 4. Test results and physical UI observations; identify any checks the owner still needs to perform.
 5. Which optional patches are active, their source commits, stock binary backups, and whether upgrades can replace them.
@@ -841,14 +809,16 @@ Leave a private setup report containing:
 Rollback is per component, not a wholesale replacement of HOME:
 
 - Restore reviewed config files from `AI_ENV_BACKUP`; remove only newly created files listed in the report. Preserve credentials and unrelated changes made after setup. Remove/revert only the shell source lines added here.
-- Before disabling attention, restore Herdr's prior built-in notification delivery/sound so blocked alerts do not disappear. Then disable unwanted plugin IDs, restore config/detector, and reload both.
-- Restore/relink Herdr's stock executable and detach/relaunch. Remove `[ui.sidebar.usage]` when returning to a stock/header-only client. Keep existing panes and any newer server protocol constraints in mind.
+- Herdr app files: switch away first (`herdr-app do layout.switch --name main`), then restore `settings.json` and `keys.json` from `AI_ENV_BACKUP`. Remove only what section 6 installed: the twelve exported mod folders, `mods/git-graph`, `mods/automations`, `layouts/main-plus.json` and the theme. Never delete `~/.config/herdr-app` wholesale; the rest is the app's own.
+- Remove only the five Herdr helpers from `~/.local/bin`, and restore `ghostty-quad`/`ghostty-dual` from the backup if they were replaced.
+- Automations: `herdr-automations service uninstall` if section 10 installed it, then remove `~/.local/bin/herdr-automations`. Keep `automations.yaml` and its run history unless the owner asks otherwise.
+- Removing the Herdr app itself: herdr-core keeps terminals running after the window closes. Check `hc ls` and end those terminals deliberately before removing `~/.local/bin/herdr-core` and `hc`. Then remove the app bundle and the `~/.local/bin/herdr-app` link.
 - Restore Codex's saved native executable and the stock-adapted router together; preserve its npm launcher/helpers and restart Codex sessions normally.
 - Run `claude-footer-oneline.py --revert` for the footer customization.
-- For an optional usage job, `launchctl bootout gui/$(id -u)/<label>` using the recorded label, then remove only its own plist/runner. Do not remove other LaunchAgents.
 - Disable archive automation through the environment flags before removing helpers. Preserve existing transcripts and archives; setup rollback is not permission to delete them.
+- Legacy Herdr 0.9.0 rollback is in [Appendix L7](#l7-legacy-rollback).
 
-For future upgrades, review changes before copying. Pi's `pi update` wrapper runs cursor regressions before/after; rerun compatibility smoke checks after extension updates. Claude updates may need a newly compatible footer patch. Codex's launcher automatically rebuilds and tests its customizations when npm changes; patch incompatibilities are reported explicitly. Herdr updates require reviewing both pinned source patches and the detector override. Relink plugins if this checkout moves and rebuild copy-search if its source changes. Repeat the acceptance checks affected by each upgrade.
+For future upgrades, review changes before copying. Pi's `pi update` wrapper runs cursor regressions before/after; rerun compatibility smoke checks after extension updates. Claude updates may need a newly compatible footer patch. Codex's launcher automatically rebuilds and tests its customizations when npm changes; patch incompatibilities are reported explicitly. The Herdr app replaces its shipped mods and layouts on every update, but `tabs-plus` and `main-plus` are clones that never update. Compare them with the new shipped `tabs` and `main` (their `cloned_from.version` says which release they came from) and carry fixes over by hand. `herdr-app-arrange` edits herdr-core's undocumented layout document; after a core update, a format change makes it refuse without writing. To move git-graph or automations to a newer upstream release, review it and repeat section 6's copy with the new pin. Repeat the acceptance checks affected by each upgrade.
 
 ### Coverage map for future maintainers
 
@@ -858,20 +828,274 @@ Use this table when adding files. Every new runtime file, dependency, or config 
 |---|---|---|
 | `claude-code/config/` | `~/.claude/`; alias via shared shell config | 4, 7 |
 | `claude-code/custom/statusline/` | statusline at `~/.claude/`, Python helpers in `~/.claude/bin/`; test stays in repo | 4, 9, 11 |
-| `claude-code/custom/shortcuts/` | `~/.local/bin/claude-cycle-effort` | 4, 6 |
+| `claude-code/custom/shortcuts/` | `~/.local/bin/claude-cycle-effort`; used by the legacy router | 4, L2 |
 | `claude-code/custom/workflows/` | `~/.claude/workflows/`; runtime availability must be checked | 4, 10 |
 | `codex/config/` | `~/.codex/`, shared instruction link, theme; alias via shell config | 4, 5, 7 |
 | `codex/patches/` | tested source build and managed launcher outside npm | 9 |
-| `ghostty/config/`, `ghostty/helpers/` | `~/.config/ghostty/config`, shell aliases, `~/.local/bin/` | 7 |
-| `herdr/config/`, `herdr/agent-detection/` | `~/.config/herdr/`; activate after plugin installation | 6, 7 |
-| `herdr/helpers/`, `herdr/lib/` | `~/.local/bin/` and `~/.local/lib/herdr-arrange/`; collector optional | 6, 10 |
-| `herdr/shortcuts/` | `~/.config/herdr/shortcuts/`; stock/patched Codex distinction | 6, 9 |
-| `herdr/extensions/custom/herdr-attention/` | copied to `~/.config/herdr/plugins/local/herdr-attention`, then linked | 6, 7 |
-| Other `herdr/extensions/custom/` directories | linked permanent checkout; copy-search built locally | 6, 7 |
-| `herdr/patches/` | optional pinned builds; 0.8.2 search patch retained only as history | 9 |
+| `ghostty/config/`, `ghostty/helpers/` | `~/.config/ghostty/config`, shell aliases, `~/.local/bin/`; helpers prefer `herdr-app-grid` | 7, 11 |
+| `herdr-app/home/` | copied into `~/.config/herdr-app/`; `settings.json` and `keys.json` merged, never symlinked | 6, 7, 11 |
+| `herdr-app/bin/` | `~/.local/bin/` | 6, 11 |
+| `herdr-app/automations/` | `~/.config/herdr/plugins/config/dnzzl.automations/`; login service optional | 6, 10 |
+| Upstream git-graph and automations (pinned, not in this repo) | mod folders copied into `~/.config/herdr-app/mods/`; CLI copied to `~/.local/bin/` | 6, 10, 11 |
+| `herdr/config/`, `herdr/agent-detection/` (legacy) | `~/.config/herdr/`; activate after plugin installation | L2, L3 |
+| `herdr/helpers/`, `herdr/lib/` (legacy) | `~/.local/bin/` and `~/.local/lib/herdr-arrange/`; collector optional | L2, L5 |
+| `herdr/shortcuts/` (legacy) | `~/.config/herdr/shortcuts/`; stock/patched Codex distinction | L2, 9 |
+| `herdr/extensions/custom/herdr-attention/` (legacy) | copied to `~/.config/herdr/plugins/local/herdr-attention`, then linked | L2, L3 |
+| Other `herdr/extensions/custom/` directories (legacy) | linked permanent checkout; copy-search built locally | L2, L3 |
+| `herdr/patches/` (legacy) | optional pinned builds; 0.8.2 search patch retained only as history | L4 |
 | `pi/config/` | agent settings/keys/theme/instruction link; runtime UI at `~/.pi/settings.json`; shell wrapper | 4, 7 |
 | `pi/extensions/custom/` | contents copied directly under `~/.pi/agent/extensions/` | 7 |
 | `pi/extensions/package*.json` | extension root manifests; also install nested claude-compat dependencies | 7 |
-| `pi/helpers/` | `~/.local/bin/`; archive and usage activation separate | 7, 10 |
+| `pi/helpers/` | `~/.local/bin/`; archive activation separate; `herdr-usage` feeds the legacy sidebar | 7, 10, L5 |
 | Both `EXTERNAL-EXTENSIONS.md` inventories | install/reconcile package and marketplace state through each manager | 8 |
 | `README.md`, `SHORTCUTS.md`, `LICENSE`, development/test/demo metadata | reference material in permanent checkout | 11, 12 |
+
+## Appendix L. Legacy Herdr 0.9.0 (TUI)
+
+**Legacy.** This is the setup for the old terminal-UI Herdr 0.9.0. It runs inside Ghostty, with its config at `~/.config/herdr/config.toml` and plugins under `~/.config/herdr/plugins/`. A new machine uses the Herdr app instead (sections 3, 6 and 7). Keep this appendix for a machine that still runs the old Herdr, or to reproduce it. The text below is the September 17 audit's, with only its headings and section references updated, and it was not rehearsed again. The old `herdr` and the Herdr app (`herdr-app`, `hc`) are separate programs that share no agents, so they can be installed side by side.
+
+Its extra prerequisites, after sections 1 and 2:
+
+```sh
+brew install fzf terminal-notifier
+mkdir -p "$HOME/.local/lib/herdr-arrange" "$HOME/.config/herdr/shortcuts" \
+  "$HOME/.config/herdr/agent-detection" "$HOME/.config/herdr/plugins/local"
+```
+
+`bat` is optional for Openr previews.
+
+### L1. Install the Herdr 0.9.0 binary
+
+On a fresh machine, install the [0.9.0 release](https://github.com/herdrdev/herdr/releases/tag/v0.9.0) to match this export. These macOS asset digests were verified from GitHub's release metadata when this guide was written:
+
+```sh
+case "$(uname -m)" in
+  arm64)
+    AI_ENV_HERDR_ASSET=herdr-macos-aarch64
+    AI_ENV_HERDR_SHA=32b53df09872628059c789a69f02a6b8e29e14ddf26711421f3463f70c1aef17
+    ;;
+  x86_64)
+    AI_ENV_HERDR_ASSET=herdr-macos-x86_64
+    AI_ENV_HERDR_SHA=d0c920b2a126a74809fa1491411c9a097a44786cac9c2ca51b818a995581cf16
+    ;;
+  *) echo 'Unsupported architecture' >&2 ;;
+esac
+curl -fsSL "https://github.com/herdrdev/herdr/releases/download/v0.9.0/$AI_ENV_HERDR_ASSET" \
+  -o "$AI_ENV_BACKUP/herdr-download"
+test "$(shasum -a 256 "$AI_ENV_BACKUP/herdr-download" | awk '{print $1}')" = "$AI_ENV_HERDR_SHA"
+chmod +x "$AI_ENV_BACKUP/herdr-download"
+put_file "$AI_ENV_BACKUP/herdr-download" "$HOME/.local/bin/herdr"
+herdr --version
+```
+
+For an intentionally chosen newer installation, the [official installer](https://herdr.dev/) instead downloads the current release. Download and inspect it before execution:
+
+```sh
+curl -fsSL https://herdr.dev/install.sh -o "$AI_ENV_BACKUP/herdr-install.sh"
+```
+
+After inspection, and only if choosing that alternative:
+
+```sh
+sh "$AI_ENV_BACKUP/herdr-install.sh"
+herdr --version
+```
+
+If the result is newer than 0.9.0, validate config and plugins against it. Do not apply 0.9.0 source patches to that binary or newer source. For the exact patched baseline, L4 builds 0.9.0 from its pinned source separately. Retain a stock executable before changing the launcher.
+
+Do not launch Herdr until the shell environment in section 7 is ready. Its server retains its startup environment; changing your current terminal's PATH does not update an already-running server.
+
+### L2. Install its runtime dependencies before its config
+
+#### Helpers, library, shortcuts, and Claude detector
+
+```sh
+for name in herdr-agent-view herdr-move-tab herdr-arrange herdr-codex-usage; do
+  put_file "$AI_ENV_REPO/herdr/helpers/$name" "$HOME/.local/bin/$name" || break
+  chmod +x "$HOME/.local/bin/$name"
+done
+for name in arrange.py test_arrange.py test_live.py order_cases.py README.md; do
+  put_file "$AI_ENV_REPO/herdr/lib/herdr-arrange/$name" "$HOME/.local/lib/herdr-arrange/$name" || break
+done
+put_file "$AI_ENV_REPO/herdr/shortcuts/cycle-effort.py" "$HOME/.config/herdr/shortcuts/cycle-effort.py"
+put_file "$AI_ENV_REPO/herdr/shortcuts/test_cycle_effort.py" "$HOME/.config/herdr/shortcuts/test_cycle_effort.py"
+new_config "$AI_ENV_REPO/herdr/agent-detection/claude.toml" "$HOME/.config/herdr/agent-detection/claude.toml"
+```
+
+If any loop failed, resolve it before proceeding. The arranger needs its adjacent library at `~/.local/lib/herdr-arrange`; copying only its launcher will fail.
+
+**Codex compatibility:** the router identifies the foreground executable against
+`~/.local/share/codex-shortcuts/capabilities.json`. Recognized managed builds get
+full cycling; stock or unrecognized sessions get Alt+. (increase only, without
+Max/Ultra wrapping). Missing or unreadable metadata uses that fallback. There is
+no manual router edit or temporary PID list. Install the managed build in section 9.
+
+
+#### Attention plugin
+
+```sh
+mkdir -p "$HOME/.config/herdr/plugins/local/herdr-attention"
+for name in herdr-plugin.toml notify.py test_notify.py README.md; do
+  put_file "$AI_ENV_REPO/herdr/extensions/custom/herdr-attention/$name" \
+    "$HOME/.config/herdr/plugins/local/herdr-attention/$name" || break
+done
+```
+
+This plugin requires Python, `terminal-notifier`, `/usr/bin/afplay`, and `/System/Library/Sounds/Ping.aiff`. Set the manifest's Python command to the absolute Homebrew Python path if the server cannot resolve it. The plugin must be linked and enabled in L3 **before** applying the config that disables built-in alerts.
+
+#### Build copy-search
+
+```sh
+(
+  cd "$AI_ENV_REPO/herdr/extensions/custom/herdr-copy-search" || exit
+  cargo build --release --locked
+)
+test -x "$AI_ENV_REPO/herdr/extensions/custom/herdr-copy-search/target/release/herdr-copy-search"
+```
+
+`herdr plugin link` does not build it. Keep the built checkout in place. Use this bundled source, not an upstream reinstall that may replace local behavior. Pane-mover needs Node but no npm dependencies; Openr needs Python, zsh, jq, and fzf. Registration follows in L3.
+
+### L3. Start Herdr and register plugins
+
+Start `herdr` in the new Ghostty terminal, using its existing/default config initially. Keep the setup shell available in a separate pane or terminal. Register the local plugins and the pinned external layout plugin:
+
+```sh
+herdr plugin link "$HOME/.config/herdr/plugins/local/herdr-attention"
+herdr plugin enable mitchnick.attention
+herdr plugin link "$AI_ENV_REPO/herdr/extensions/custom/herdr-pane-mover"
+herdr plugin enable osamahbeig.pane-mover
+herdr plugin link "$AI_ENV_REPO/herdr/extensions/custom/herdr-openr"
+herdr plugin enable openr
+herdr plugin link "$AI_ENV_REPO/herdr/extensions/custom/herdr-copy-search"
+herdr plugin enable copy-search
+herdr plugin install edouard-andrei/herdr-layout-tools --ref 826364134071e470f1d54e69b8ab8dfd49972477
+herdr plugin enable edi.layout-tools
+herdr plugin list
+```
+
+Verify all five IDs are enabled. Do not follow the original Openr README's upstream quick-start or automatic key installer; the bundled adaptation supplies Codex transcript support and this repo already supplies its keybindings. Likewise use the bundled pane-mover: its `open-tabs` action is a local addition.
+
+**Only after attention is enabled**, install/merge the Herdr config:
+
+```sh
+new_config "$AI_ENV_REPO/herdr/config/config.toml" "$HOME/.config/herdr/config.toml"
+herdr config check
+herdr server reload-config
+herdr server reload-agent-manifests
+"$HOME/.local/bin/herdr-agent-view" rest
+```
+
+Before reloading, verify the absolute Python path in the Cmd+Shift+E command and the socket paths in the arranger commands. The export targets the default local `~/.config/herdr/herdr.sock`. For another session, update those paths; agent-view and tab-movement helpers also target the default local socket. Do not apply default-session commands to an unrelated session.
+
+`herdr-agent-view rest` sets transient stable ordering; repeat after a server restart. The detector override shadows upstream Claude rules. On a newer Herdr version, compare with its upstream manifest and merge relevant updates or retire the override if the fix is already present.
+
+Config and detector reloads need no server restart. For an already-running server with a stale PATH, prefer absolute interpreters in manifests/bindings. A planned server environment refresh is separate and must preserve the user's running work.
+
+### L4. Machine headers and pinned usage section (optional build)
+
+Never apply the historical `native-search-scrollback-v0.8.2.patch` to 0.9.0 or downgrade a server for it. Herdr 0.9.0 already has native literal search via Ctrl+B, [, /; copy-search adds regex and extraction.
+
+Use either the machine-header patch alone or both patches in this order. The following builds both; omit the two usage-patch application commands for headers only:
+
+```sh
+brew install zig@0.15
+rustup toolchain install 1.96.1
+export ZIG="$(brew --prefix zig@0.15)/bin/zig"
+"$ZIG" version
+git clone --branch v0.9.0 --single-branch https://github.com/herdrdev/herdr.git "$HOME/Projects/herdr-custom-source"
+(
+  set -e
+  cd "$HOME/Projects/herdr-custom-source"
+  git checkout --detach b99002ac99b09e00b4ca692436cb15a6b0d676f1
+  git apply --check "$AI_ENV_REPO/herdr/patches/machine-headers-v0.9.0.patch"
+  git apply "$AI_ENV_REPO/herdr/patches/machine-headers-v0.9.0.patch"
+  git apply --check "$AI_ENV_REPO/herdr/patches/usage-section-v0.9.0.patch"
+  git apply "$AI_ENV_REPO/herdr/patches/usage-section-v0.9.0.patch"
+  cargo +1.96.1 fmt --check
+  just build
+  cargo +1.96.1 test --release --locked --bin herdr client::shell
+  cargo +1.96.1 test --release --locked --bin herdr config::sidebar
+)
+```
+
+Stop if Zig is not 0.15.2; obtain the pinned release before building. The checkout's toolchain file selects Rust 1.96.1 for `just build`. Keep patch files/guides available in this checkout or copy the selected pairs into `~/.config/herdr/patches` for maintenance.
+
+Install to a **new** executable path to avoid macOS signature failures from in-place overwrites:
+
+```sh
+test ! -e "$HOME/.local/bin/herdr-custom-0.9.0"
+install -m 755 "$HOME/Projects/herdr-custom-source/target/release/herdr" "$HOME/.local/bin/herdr-custom-0.9.0"
+"$HOME/.local/bin/herdr-custom-0.9.0" --version
+cp -pL "$(command -v herdr)" "$AI_ENV_BACKUP/herdr-before-custom"
+save_existing "$HOME/.local/bin/herdr"
+ln -sfn "$HOME/.local/bin/herdr-custom-0.9.0" "$HOME/.local/bin/herdr"
+```
+
+Use a new backup filename for subsequent builds; do not overwrite the stock copy with a custom binary. These client patches match the pinned server's protocol. Do not assume a custom 0.9.0 client can attach to a newer server; compare versions/protocol first. Keep running panes intact and record any required planned migration.
+
+For the pinned usage section, move the four custom-token rows (5h, 7d, fable, openai) from `[ui.sidebar.spaces].rows` into a new `[ui.sidebar.usage]` with `label = "usage"`. Keep the `state_icon`/`workspace` row in spaces. Use the same token names from the exported config. Without a token publisher, no usage block appears. Headers-only and stock binaries must not receive this new table.
+
+Run `herdr config check`. Use the sidebar **menu → detach**, then launch `~/.local/bin/herdr` to load the client. Config reload cannot load compiled rendering changes. No server restart is needed for a compatible client patch. An older stock server may warn that `ui.sidebar.usage` is unknown on config reload; clearing that server warning is a separate planned upgrade. Detailed rendering/compatibility evidence lives in [the usage patch notes](herdr/patches/usage-section-v0.9.0.md).
+
+### L5. Account usage in the sidebar (optional)
+
+The actual export **does include** `pi/helpers/herdr-usage`, despite older Herdr prose saying the publisher is excluded. It does **not** include the LaunchAgent that schedules it. That publisher reads Claude login credentials and Pi's OpenAI login when refreshing usage; never run it with shell tracing. Its default Pi search only checks nvm directories, so supply `PI_BIN` explicitly for the wrapper installed here.
+
+To enable usage, confirm logins and Herdr's socket first, then set absolute executable paths in the private shell environment or runner:
+
+```sh
+export HERDR_BIN="$HOME/.local/bin/herdr"
+export PI_BIN="$HOME/.local/bin/pi"
+export CODEX_BIN="$(command -v codex)"
+"$HOME/.local/bin/herdr-codex-usage"
+"$HOME/.local/bin/herdr-usage"
+```
+
+Use the Codex collector **before** the publisher: it updates `~/.pi/agent/openai-usage-cache.json` through Codex's login, allowing the publisher's Pi fallback to stay unused while that cache is fresh. Claude's separate usage cache is `~/.claude/usage-cache.json`. No account data belongs in the repo. Check cache freshness and rendered tokens without printing credentials or raw account payloads. These internal usage endpoints can change; keep the feature outstanding if real responses no longer match the helper.
+
+For periodic updates, create a private executable runner under `~/.local/bin` that sources `~/.config/ai-dev-environment/shell.zsh`, exports the absolute `HERDR_BIN`, `PI_BIN`, `CODEX_BIN`, `PI_NODE_BIN`, `PI_CLI_PATH`, and `HERDR_SOCKET_PATH`, runs the collector first, then the publisher. Give it an explicit PATH including the selected Node, Homebrew Python/jq, and system tools. A LaunchAgent does not inherit the interactive terminal environment.
+
+Create a user plist under `~/Library/LaunchAgents/` with a unique label, `KeepAlive` true, `RunAtLoad` true, and `ProgramArguments` of `/bin/bash -c 'while true; do <runner>; sleep 120; done'` with the runner's absolute path. Do not use `StartInterval`: macOS can silently stop re-arming it while `launchctl` still reports the job as healthy. With the loop, the job has a live PID, so `launchctl print gui/$(id -u)/<label>` showing a `pid` is a real health check. Use `plutil -lint`, then `launchctl bootstrap gui/$(id -u) <absolute-plist-path>` and `launchctl kickstart gui/$(id -u)/<label>`. Replace the angle-bracket placeholders first. Record label/path for rollback; do not overwrite an existing job. Verify a scheduled run refreshes the cache and visible tokens. The publisher returns early without a socket or workspace, so exit status alone is insufficient. It publishes on the selected/last local workspace; a patched sidebar can display those tokens once. Stock config displays them in workspace rows.
+
+### L6. Legacy checks
+
+```sh
+whence -a herdr
+herdr --version
+herdr plugin list
+herdr config check
+python3 -c 'import pathlib, tomllib; tomllib.load((pathlib.Path.home() / ".config/herdr/config.toml").open("rb")); print("Herdr TOML OK")'
+```
+
+Confirm every active `keys.command` in Herdr resolves to an installed helper or enabled plugin action.
+
+```sh
+cd "$AI_ENV_REPO"
+python3 -B -m unittest discover -s herdr/extensions/custom/herdr-attention -p test_notify.py -v
+python3 -B -m unittest discover -s herdr/lib/herdr-arrange -p test_arrange.py -v
+python3 -B -m unittest discover -s herdr/agent-detection -p test_claude.py -v
+python3 -B -m unittest discover -s herdr/extensions/custom/herdr-openr -p 'test_*.py' -v
+python3 -B -m unittest discover -s herdr/shortcuts -p test_cycle_effort.py -v
+python3 -B -m unittest discover -s herdr/helpers -p test_codex_usage.py -v
+(cd "$AI_ENV_REPO/herdr/extensions/custom/herdr-copy-search" && cargo test --locked)
+```
+
+The router tests cover managed and stock sessions, replaced binaries, and failed detection. Verify the shortcut in a resumed managed session as well. The notification and usage tests mock external delivery/API behavior; passing them does not prove real banners or live account access. For stronger arranger coverage, `python3 -B herdr/lib/herdr-arrange/test_live.py` starts its own named server and PTY; run only when ready for that isolated integration test. It must not target the user's active session.
+
+- [ ] Herdr Cmd+D / Cmd+Shift+D split; Cmd+T creates a tab; Cmd+] / Cmd+[ move focus; rename, tab movement, workspace selection, and agent navigation work. Use [SHORTCUTS.md](SHORTCUTS.md) as the complete shortcut reference. Prefix fallbacks work, especially over SSH where native Cmd chords may not survive.
+- [ ] Pane-mover Cmd+M opens the tab list; Cmd+Shift+M opens the root menu. A scratch pane moves successfully. Main-grid/equalize/editor actions resolve through layout-tools.
+- [ ] Cmd+Shift+R and Cmd+Ctrl+R arrange scratch panes into wide/laptop layouts without losing running processes; repeating the same layout is harmless.
+- [ ] Cmd+K opens Openr in a Claude/Codex session containing a harmless assistant URL. Enter opens, Ctrl+Y copies, Escape closes. Test mouse interaction physically if required. A missing local transcript falls back to visible text; do not infer remote transcript access.
+- [ ] Cmd+Shift+F searches through copy-search; Cmd+Shift+C opens its copy mode; Cmd+Shift+X extracts tokens; copying reaches the macOS clipboard. Ctrl+B, [, / still provides native literal search. Ghostty Cmd+F searches the outer terminal, not the whole Herdr pane history.
+- [ ] During work, idle, and a harmless input/approval prompt, the sidebar classifies states correctly. Each sustained blocked cycle produces **one** audible Ping and **one** visible popup, including in a focused pane. Completion produces neither. Check terminal-notifier notification permissions and macOS Focus if presentation fails. Clicking the popup activates Ghostty.
+- [ ] After opening a new terminal and reattaching Herdr, PATH, wrapper, themes, plugin links, and instructions still work. Reapply `herdr-agent-view rest` after an actual server restart.
+
+If a layout operation fails with panes in an `arranging panes` tab, keep that tab open and recover with pane-mover. The arranger writes recovery/error files under the system temporary directory. Do not use `layout.apply` for recovery; it can recreate terminals.
+
+### L7. Legacy rollback
+
+- Before disabling attention, restore Herdr's prior built-in notification delivery/sound so blocked alerts do not disappear. Then disable unwanted plugin IDs, restore config/detector, and reload both.
+- Restore/relink Herdr's stock executable and detach/relaunch. Remove `[ui.sidebar.usage]` when returning to a stock/header-only client. Keep existing panes and any newer server protocol constraints in mind.
+- For an optional usage job, `launchctl bootout gui/$(id -u)/<label>` using the recorded label, then remove only its own plist/runner. Do not remove other LaunchAgents.
+
+Herdr updates require reviewing both pinned source patches and the detector override. Relink plugins if this checkout moves and rebuild copy-search if its source changes.

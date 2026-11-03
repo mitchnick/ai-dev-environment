@@ -1,0 +1,10 @@
+{
+  "zoom": 1.0,
+  "sounds": {
+    "enabled": false
+  },
+  "minimum_contrast": 1.0,
+  "theme": "monokai-pro-spectrum",
+  "font": "MesloLGS Nerd Font Mono",
+  "font_size": 14
+}
