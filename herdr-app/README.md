@@ -28,6 +28,8 @@ The app's home is `~/.config/herdr-app/`. Read `herdr-app --skill` and the
 | `home/mods/link-picker` | URLs the focused agent mentioned, from `herdr-app-links`; Enter opens, Ctrl+Y copies |
 | `home/mods/scrollback-search` | Searches the focused terminal's last 5000 lines (`hc read`); Enter copies the line |
 | `home/mods/tabs-plus` | A clone of the shipped `tabs` mod with Graph and Automations buttons, and a `tabs-plus.graph` key command |
+| `home/mods/pane-plus` | A clone of the shipped `pane` header. It shows a name typed in Rename pane (the terminal's `pane.name` label) if there is one; else, while an agent runs, the pane's task name (`autoname.task`) in place of "Claude Code" or "Codex". Double-click the name to rename the pane. `main-plus` uses it for every pane header |
+| `home/mods/rename-pane` | The Rename pane dialog (Cmd+Shift+N, or double-click a header's name): sets or, when empty, removes the focused terminal's `pane.name` label in herdr-core, so the name survives app restarts |
 
 `bin/` installs into `~/.local/bin/`. Every script uses `$HOME`/`Path.home()`:
 
@@ -38,6 +40,7 @@ The app's home is `~/.config/herdr-app/`. Read `herdr-app --skill` and the
 | `herdr-app-cycle-effort` | Routes Cmd+Shift+E by the terminal's foreground program: Claude goes to `claude-cycle-effort-hc`, Codex gets `alt+shift+e` (managed shortcuts build) or `alt+.`, Pi gets `alt+shift+e` |
 | `claude-cycle-effort-hc` | Steps Claude Code's model picker one effort level, through `hc keys`/`hc read` and `herdr-app do pane.zoom`. Current pickers stop at Max, so from the top it steps back down to the lowest |
 | `herdr-app-grid` | `quad`/`dual`: a new tab in the calling terminal's space, split 2x2 or side by side. Exits 3 outside herdr-app so `ghostty-quad`/`ghostty-dual` can fall back to Ghostty |
+| `herdr-app-autoname` | Names panes and tabs from each chat's first message; see [Pane and tab names](#pane-and-tab-names). `install-hooks` adds its Claude Code and Codex hooks |
 
 `automations/automations.yaml` is a starter config for the automations CLI
 (`backend: hc`, no automations). It installs to
@@ -60,8 +63,8 @@ daemon` is running, which SETUP section 10 offers as an optional LaunchAgent.
 
 ### Derived from Herdr
 
-`tabs-plus` and `main-plus` are clones of the app's shipped `tabs` mod and
-`main` layout at 0.1.12 (Apache-2.0, [herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)).
+`tabs-plus`, `pane-plus` and `main-plus` are clones of the app's shipped `tabs`
+and `pane` mods and `main` layout at 0.1.12 (Apache-2.0, [herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)).
 Their `cloned_from` field records that. Clones never update with the app.
 After a Herdr update, compare them with the new shipped versions and carry
 over fixes by hand.
@@ -88,6 +91,57 @@ over fixes by hand.
   layout.
 - **The automations LaunchAgent.** `herdr-automations service install`
   regenerates it with the current shell's `PATH`; it is not a portable file.
+
+## Pane and tab names
+
+The first message of each Claude Code, Codex or Pi chat names its pane and tab.
+`herdr-app-autoname` sends the message to `openai-codex/gpt-6.1-sol` through
+`pi -p` (no tools, extensions or session; the Codex subscription pays) and gets
+back a 1-3 word lowercase task name, or nothing for "hi". The call runs in a
+detached worker, so prompts are never delayed; names land 5-10 seconds later.
+
+- **Pane:** the terminal gets the label `autoname.task=<name>`, which
+  `pane-plus` shows while an agent runs there. In Claude and Pi a new chat
+  (`/clear`, `/new`, a new session) clears the task name until its first
+  message; Codex keeps the old one until the new chat's first message
+  replaces it. A name typed in Rename pane (`pane.name`) always shows
+  instead; clear it to get the task name back.
+- **Tab:** `<checkout> - <name>` when the git root's folder ends in a number
+  and has a numbered sibling (`myapp/app0` beside `app1` gives `app0`; `work/api-1`
+  beside `api-2` gives `api-1`), else just `<name>`.
+- **Hand-typed names win.** The tab is renamed only while it is unnamed, holds
+  a placeholder (`3`, `3 -`, `app3 -`) or still holds the name this script last
+  gave it (kept in `~/.local/state/herdr-app-autoname/tabs.json`). Anything
+  else was typed by a person and stays until they clear it with `tab.rename`
+  and an empty name. Several agents in one tab: the newest chat names it.
+- **Only the first message.** Later messages, resumed chats (`--resume`,
+  `pi -c`), Claude sub-agents, `hc run` sub-agents and agents nested inside
+  another agent's pane (a cross-review `codex exec`, a `claude -p` from a
+  tool call) change nothing. A first message with no task leaves things alone
+  and the next message gets the chance.
+
+How it finds the pane: Claude Code and Pi pass `HC_TERMINAL_ID` to the hook,
+and the hook checks that its agent is that terminal's foreground program.
+Interactive Codex runs hooks in its shared app-server daemon with a cleaned
+environment, so the worker finds the Codex pane whose screen shows the
+prompt, or failing that (a pasted prompt) the one Codex in that folder that
+just started working.
+
+The tab name is written to the core's `herdr-app` document with
+`doc.get`/`doc.set`, versioned like `herdr-app-arrange`, after checking only
+that tab's name changes. Each machine's hook writes its own core, so remote
+spaces work once the script, hooks and Pi extension are on that machine.
+
+```sh
+herdr-app-autoname try --cwd ~/Projects/myapp/app2 "the webhook double charges"   # names, no changes
+herdr-app-autoname status                     # the last 30 decisions
+touch ~/.local/state/herdr-app-autoname/debug # also log why a hook did nothing
+HERDR_AUTONAME_OFF=1                          # in an agent's environment: skip it
+```
+
+`HERDR_AUTONAME_MODEL` picks another Pi model and `HERDR_AUTONAME_PI` another
+`pi`. `install-hooks` gives Codex an absolute path, since Codex runs hooks
+from its daemon rather than the pane's shell.
 
 ## How the key-driven mods work
 

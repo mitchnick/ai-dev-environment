@@ -283,7 +283,7 @@ Before launching Claude, edit the installed preferences as needed:
 - `enabledPlugins` is a preference, not an installer. Disable unresolved plugin entries until section 8 installs them. Leave Telegram disabled.
 - Review the permission bypass prompt settings together with the alias decision in section 1. Preserve existing deny rules.
 
-The statusline requires `jq` and Git. `herdr-auto-label.py` also requires authenticated Pi access to its configured label model. Copying these files does **not** install the excluded Claude hooks for labels, archive-on-exit, or footer repatching; record those as inactive unless restored from a private source.
+The statusline requires `jq` and Git. `herdr-auto-label.py` is the legacy Herdr 0.9.0 pane labeler and does nothing in the Herdr app, which uses section 6's `herdr-app-autoname` instead; it also requires authenticated Pi access to its configured label model. Copying these files does **not** install the excluded Claude hooks for labels, archive-on-exit, or footer repatching; record those as inactive unless restored from a private source.
 
 ## 5. Install Codex preferences
 
@@ -303,7 +303,8 @@ Everything in this section is copied, never symlinked. [`herdr-app/README.md`](h
 ### Helper scripts
 
 ```sh
-for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid; do
+for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid \
+    herdr-app-autoname; do
   put_file "$AI_ENV_REPO/herdr-app/bin/$name" "$HOME/.local/bin/$name" || break
   chmod +x "$HOME/.local/bin/$name"
 done
@@ -325,9 +326,23 @@ while IFS= read -r -d '' source; do
 done < <(git -C "$AI_ENV_REPO" ls-files -z -- herdr-app/home/)
 ```
 
-The loop installs the theme, the `main-plus` layout and twelve mods. Only tracked files are copied, so a `gpui-kit.d.ts` or `jsconfig.json` that a check left in the checkout is skipped. When merging an existing `keys.json`, keep its sections and ask before replacing a key the owner already uses. The `layout:main-plus` section applies only while that layout shows.
+The loop installs the theme, the `main-plus` layout and fourteen mods. Only tracked files are copied, so a `gpui-kit.d.ts` or `jsconfig.json` that a check left in the checkout is skipped. When merging an existing `keys.json`, keep its sections and ask before replacing a key the owner already uses. The `layout:main-plus` section applies only while that layout shows.
 
 `main-plus` needs the `git-graph` and `automations` mods below; until they are installed, its Graph and Automations panels report errors.
+
+### Pane and tab names
+
+`herdr-app-autoname` names each agent's pane, and its tab, from the first message of every Claude Code, Codex and Pi chat. A small model turns the message into a 1–3 word task name. Tabs read `app0 - google login` when the folder is one of several numbered checkouts (`app0`, `app1`, … or `api-1`, `api-2`, …), else `google login`. A tab named by hand keeps its name; one that is unnamed, holds a placeholder (`3`, `3 -`, `app3 -`) or still holds the last generated name follows the newest chat. [`herdr-app/README.md`](herdr-app/README.md#pane-and-tab-names) has the details.
+
+Add its hooks to Claude Code and Codex. It backs up each file, leaves other hooks alone, and does nothing if they are already there:
+
+```sh
+"$HOME/.local/bin/herdr-app-autoname" install-hooks
+```
+
+Pi gets the `herdr-app-autoname.ts` extension in section 7, and the `pane-plus` header that shows the names came with the mods above, along with `rename-pane` (Cmd+Shift+N) for naming a pane by hand. Names come from `openai-codex/gpt-6.1-sol` through Pi, so they start working once Pi is signed in to the Codex subscription (section 8). Section 11 checks it. Codex lists the new hooks under `/hooks`, where they should read Trusted; approve them there if not. A Codex already running needs a restart to load them; Claude picks them up on its own.
+
+Run the same three steps on every machine whose agents show up in this Herdr: the script, `install-hooks` and the Pi extension. Each machine names its own tabs in its own herdr-core, so the app needs nothing extra for remote spaces.
 
 ### Git graph, automations panel and CLI
 
@@ -478,7 +493,7 @@ Open Herdr from Applications, or run `herdr-app` from a shell. A Finder launch l
 ```sh
 herdr-app do layout.switch --name main-plus
 for mod in tab-move-left tab-move-right pane-next pane-prev pane-mover pane-mover-tabs \
-    effort-cycle arrange-wide arrange-laptop link-picker scrollback-search tabs-plus \
+    effort-cycle arrange-wide arrange-laptop link-picker scrollback-search tabs-plus pane-plus rename-pane \
     git-graph automations; do
   herdr-app check "$HOME/.config/herdr-app/mods/$mod" || break
 done
@@ -689,7 +704,7 @@ Jev instruction section, restoring any files backed up during installation.
 | Item | Required disposition before handoff |
 |---|---|
 | Individual skills, custom agents, prompt templates | Jev is bundled above; for other skills, obtain the owner's separate source or mark unavailable; plugin-installed skills cover only their plugin contents |
-| Claude hooks | Restore privately if desired; helper files alone do not activate labels, archiving, or automatic footer patching |
+| Claude hooks | Pane and tab names are installed by `herdr-app-autoname install-hooks` (section 6). Restore the others privately if desired; helper files alone do not activate archiving or automatic footer patching |
 | Codex instruction bridge | Restore the private bridge/hooks or use manual skill links below; `features.hooks` alone is insufficient |
 | MCP server definitions, OAuth, service credentials | Recreate from an authorized private source and authenticate each connection; never infer secrets or copy another machine's trust registry |
 | Keenable | Obtain the CLI separately; key at `~/.config/keenable/env` with mode 600 or inherited environment; never put the key in commands/logs |
@@ -739,7 +754,7 @@ jq -r '.[] | .[] | select(startswith("mod.open:")) | ltrimstr("mod.open:")' "$HO
     test -f "$HOME/.config/herdr-app/mods/$mod/main.js" || echo "keys.json opens a missing mod: $mod"
   done
 for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid \
-    herdr-automations ghostty-quad ghostty-dual; do
+    herdr-app-autoname herdr-automations ghostty-quad ghostty-dual; do
   test -x "$HOME/.local/bin/$name" || echo "missing: $name"
 done
 ```
@@ -753,6 +768,7 @@ cd "$AI_ENV_REPO"
 for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc; do
   "$HOME/.local/bin/$name" --help >/dev/null || echo "failed: $name"
 done
+"$HOME/.local/bin/herdr-app-autoname" try --cwd "$HOME" "fix the google sign in redirect"
 bash -n "$HOME/.local/bin/herdr-app-grid"
 bash -n "$HOME/.local/bin/ghostty-quad"
 bash -n "$HOME/.local/bin/ghostty-dual"
@@ -762,7 +778,7 @@ pi-update --test-only
 (cd "$HOME/.pi/agent/extensions/claude-compat" && npm test)
 ```
 
-`--help` proves each helper's interpreter and imports resolve; it does not drive an agent. `herdr-app-grid` must exit 3 outside a Herdr terminal, which is what sends `4x4`/`2x2` to Ghostty there. The footer tests do not prove a newly released Claude binary matches its byte patterns.
+`--help` proves each helper's interpreter and imports resolve; it does not drive an agent. `herdr-app-autoname try` makes one real model call and prints a name such as `{"task": "google sign in redirect", "checkout": null, ...}`; an error there means Pi cannot reach `gpt-6.1-sol`. `herdr-app-grid` must exit 3 outside a Herdr terminal, which is what sends `4x4`/`2x2` to Ghostty there. The footer tests do not prove a newly released Claude binary matches its byte patterns.
 
 Create an empty scratch project and run the compatibility smoke test against it:
 
@@ -789,6 +805,7 @@ Use scratch spaces, tabs and harmless drafts. Record actual observations, not ju
 - [ ] `4x4` and `2x2` in a Herdr terminal open a new 2x2 or side-by-side tab in that space; in Ghostty they open a Ghostty window.
 - [ ] In `main-plus`, the Graph button and Cmd+Shift+G open git-graph for the focused repository; the Automations button opens the panel, which lists `automations.yaml` without an error. The scheduler state matches the section 10 choice.
 - [ ] A Claude Code session started after setup in a Herdr terminal appears in the sidebar's Agents list, and `hc get <its address> --json | jq .status` shows `"app": "claude-code"` with a state. If it is missing, check `env | grep CLAUDE_CODE_DISABLE_TERMINAL_TITLE` in that terminal (section 4).
+- [ ] In a scratch tab, the first message to Claude, then to Codex, then to Pi names the pane header and the tab within about ten seconds; a later message in the same chat changes nothing; after `/clear` (Codex and Pi: `/new`) the next first message renames a generated tab name but not one typed by hand. In a numbered checkout the tab reads `<checkout> - <name>`. `herdr-app-autoname status` shows each decision. Cmd+Shift+N (or double-clicking the header's name) renames a pane; that name stays over later task names until it is cleared.
 - [ ] During work, idle and a harmless input/approval prompt, the sidebar shows each agent's state. Sounds are off in the exported settings; record what a blocked agent shows.
 - [ ] Chosen optional features have their own observed result: footer patch, scheduled automations, local archive destination, skills, and restored MCPs. Inactive options have explicit reasons.
 - [ ] Quitting and reopening the app keeps every terminal running and returns to `main-plus` with the same keys. After opening a new terminal, PATH, wrapper, themes and instructions still work.
@@ -809,8 +826,9 @@ Leave a private setup report containing:
 Rollback is per component, not a wholesale replacement of HOME:
 
 - Restore reviewed config files from `AI_ENV_BACKUP`; remove only newly created files listed in the report. Preserve credentials and unrelated changes made after setup. Remove/revert only the shell source lines added here.
-- Herdr app files: switch away first (`herdr-app do layout.switch --name main`), then restore `settings.json` and `keys.json` from `AI_ENV_BACKUP`. Remove only what section 6 installed: the twelve exported mod folders, `mods/git-graph`, `mods/automations`, `layouts/main-plus.json` and the theme. Never delete `~/.config/herdr-app` wholesale; the rest is the app's own.
-- Remove only the five Herdr helpers from `~/.local/bin`, and restore `ghostty-quad`/`ghostty-dual` from the backup if they were replaced.
+- Herdr app files: switch away first (`herdr-app do layout.switch --name main`), then restore `settings.json` and `keys.json` from `AI_ENV_BACKUP`. Remove only what section 6 installed: the fourteen exported mod folders, `mods/git-graph`, `mods/automations`, `layouts/main-plus.json` and the theme. Never delete `~/.config/herdr-app` wholesale; the rest is the app's own.
+- Run `herdr-app-autoname remove-hooks` and delete `~/.pi/agent/extensions/herdr-app-autoname.ts` before removing the helpers. Tab names it wrote stay; its state is in `~/.local/state/herdr-app-autoname/`.
+- Remove only the six Herdr helpers from `~/.local/bin`, and restore `ghostty-quad`/`ghostty-dual` from the backup if they were replaced.
 - Automations: `herdr-automations service uninstall` if section 10 installed it, then remove `~/.local/bin/herdr-automations`. Keep `automations.yaml` and its run history unless the owner asks otherwise.
 - Removing the Herdr app itself: herdr-core keeps terminals running after the window closes. Check `hc ls` and end those terminals deliberately before removing `~/.local/bin/herdr-core` and `hc`. Then remove the app bundle and the `~/.local/bin/herdr-app` link.
 - Restore Codex's saved native executable and the stock-adapted router together; preserve its npm launcher/helpers and restart Codex sessions normally.
@@ -818,7 +836,7 @@ Rollback is per component, not a wholesale replacement of HOME:
 - Disable archive automation through the environment flags before removing helpers. Preserve existing transcripts and archives; setup rollback is not permission to delete them.
 - Legacy Herdr 0.9.0 rollback is in [Appendix L7](#l7-legacy-rollback).
 
-For future upgrades, review changes before copying. Pi's `pi update` wrapper runs cursor regressions before/after; rerun compatibility smoke checks after extension updates. Claude updates may need a newly compatible footer patch. Codex's launcher automatically rebuilds and tests its customizations when npm changes; patch incompatibilities are reported explicitly. The Herdr app replaces its shipped mods and layouts on every update, but `tabs-plus` and `main-plus` are clones that never update. Compare them with the new shipped `tabs` and `main` (their `cloned_from.version` says which release they came from) and carry fixes over by hand. `herdr-app-arrange` edits herdr-core's undocumented layout document; after a core update, a format change makes it refuse without writing. To move git-graph or automations to a newer upstream release, review it and repeat section 6's copy with the new pin. Repeat the acceptance checks affected by each upgrade.
+For future upgrades, review changes before copying. Pi's `pi update` wrapper runs cursor regressions before/after; rerun compatibility smoke checks after extension updates. Claude updates may need a newly compatible footer patch. Codex's launcher automatically rebuilds and tests its customizations when npm changes; patch incompatibilities are reported explicitly. The Herdr app replaces its shipped mods and layouts on every update, but `tabs-plus`, `pane-plus` and `main-plus` are clones that never update. Compare them with the new shipped `tabs`, `pane` and `main` (their `cloned_from.version` says which release they came from) and carry fixes over by hand. `herdr-app-arrange` and `herdr-app-autoname` edit herdr-core's undocumented layout document; after a core update, a format change makes them refuse without writing. To move git-graph or automations to a newer upstream release, review it and repeat section 6's copy with the new pin. Repeat the acceptance checks affected by each upgrade.
 
 ### Coverage map for future maintainers
 

@@ -16,6 +16,9 @@ Source is in `extensions/custom/`:
 - Claude compatibility layer
 - Herdr focus, state, label, and cursor integration (legacy Herdr TUI only: it needs
   `HERDR_*` variables that Herdr app terminals do not set)
+- Herdr app pane and tab names (`herdr-app-autoname.ts`): hands each chat's
+  start and first message to `herdr-app-autoname`, as the Claude Code and Codex
+  hooks do (see [`../herdr-app/`](../herdr-app/README.md#pane-and-tab-names))
 - Claude-style footer
 - Image generation
 - Session archive

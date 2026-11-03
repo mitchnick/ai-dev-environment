@@ -42,6 +42,7 @@ Cmd+Ctrl+Arrows - Focus the pane in that direction
 Cmd+Shift+Arrows - Swap with the pane in that direction
 Cmd+M - Move pane to another tab
 Cmd+Shift+M - Move pane: full menu (re-split, swap, tab, space)
+Cmd+Shift+N / double-click its name - Rename pane (empty: its automatic task name)
 Cmd+Shift+R - Arrange panes wide (up to 4 columns)
 Cmd+Ctrl+R - Arrange panes for a laptop (up to 2 columns)
 Resize - Drag the divider between panes
