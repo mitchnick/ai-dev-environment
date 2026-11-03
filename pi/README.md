@@ -14,7 +14,8 @@
 Source is in `extensions/custom/`:
 
 - Claude compatibility layer
-- Herdr focus, state, label, and cursor integration
+- Herdr focus, state, label, and cursor integration (legacy Herdr TUI only: it needs
+  `HERDR_*` variables that Herdr app terminals do not set)
 - Claude-style footer
 - Image generation
 - Session archive

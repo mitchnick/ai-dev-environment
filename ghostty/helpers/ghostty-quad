@@ -2,6 +2,13 @@
 # Opens a 2x2 Ghostty split layout in the current directory
 DIR="${1:-$(pwd)}"
 
+# Inside a herdr-app terminal, the same layout as a new herdr-app tab in this space
+# (~/.local/bin/herdr-app-grid). Anywhere else (exit 3), a new Ghostty window as before.
+if [ -x "$HOME/.local/bin/herdr-app-grid" ]; then
+	"$HOME/.local/bin/herdr-app-grid" quad "$DIR" && exit 0
+	[ $? -eq 3 ] || exit 1
+fi
+
 osascript <<EOF
 tell application "Ghostty"
     activate

@@ -1,0 +1,1 @@
+{ "place": "none", "title": "Move pane to a tab", "overlay": { "kind": "popup", "at": "top", "offset": 40, "width": 520 } }

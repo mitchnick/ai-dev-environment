@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# claude-cycle-effort-hc: advance a Claude Code terminal one reasoning-effort step, over hc.
+#
+# The herdr-app port of ~/.local/bin/claude-cycle-effort, which drives the old
+# Herdr's `herdr pane ...` CLI. Same picker dance and safety contract; the
+# terminal is an hc address (t7), keys go through `hc keys`, the screen comes
+# from `hc read`, and the zoom goes through `herdr-app do pane.zoom`.
+#
+# It drives Claude Code's own ModelPicker: one right-arrow per press, and from
+# the top level it steps left back down to the lowest (newer pickers stop at
+# Max instead of wrapping), so presses cycle:
+#
+#   low -> medium -> high -> xhigh -> max -> low
+#
+# (ultracode, where the plan offers it, is stepped over unless
+#  --allow-ultracode is given.)
+#
+# Safety contract:
+#   * Never types into the draft; the draft and the model are preserved.
+#   * Sends nothing unless the terminal hosts Claude Code whose current model
+#     exposes an effort level.
+#   * No-ops if any picker or dialog already owns the terminal, so it can never
+#     confirm someone else's dialog or accept a model the user navigated to.
+#   * Only confirms after observing the effort actually change; otherwise it
+#     escapes out and leaves the session as it found it.
+#
+# Usage: claude-cycle-effort-hc --terminal <t> [--pane <id>] [--zoomed] [options]
+#   --terminal <t>     hc terminal address (t7, or machine/t7). Required.
+#   --pane <id>        herdr-app pane showing it. A short pane truncates the
+#                      picker; with this, it is zoomed while the picker is open.
+#   --zoomed           That pane's tab is already zoomed: never toggle zoom.
+#   --scope session    Apply to this session only (default; picker key "s").
+#   --scope default    Also persist as the new default (picker key "enter").
+#   --allow-ultracode  Include ultracode in the cycle. Off by default:
+#                      ultracode is xhigh plus dynamic workflows, so it
+#                      changes behaviour and cost, not just depth.
+#   --skip-ultracode   Explicit form of the default.
+#   --timeout <ms>     How long to wait for the picker (default 3000).
+#   --quiet            Suppress stdout.
+#
+# Exit codes:
+#   0  effort advanced
+#   2  not applicable: not a Claude terminal, model has no effort, or a picker
+#      or dialog already owns input. Nothing was changed.
+#   3  another cycle is already running for this terminal
+#   4  bad arguments, hc unavailable, or a send failed
+set -uo pipefail
+
+TERMINAL=""
+PANE=""
+ALREADY_ZOOMED=0
+SCOPE="session"
+TIMEOUT=3000
+SKIP_ULTRACODE=1
+QUIET=0
+
+LEVELS='low|medium|high|xhigh|max|ultracode'
+# The picker header as the picker renders it: alone on its line, near the
+# bottom of the screen. Prose in the transcript that merely mentions "Select
+# model" does not match, so a session discussing this feature still works.
+PICKER_RE='^[[:space:]]*Select model[[:space:]]*$'
+PICKER_TAIL=30
+# The mod runs this from herdr-app's environment; fall back to ~/.local/bin.
+HC="${HC_BIN:-$(command -v hc || echo "$HOME/.local/bin/hc")}"
+HERDR_APP="${HERDR_APP_BIN:-$(command -v herdr-app || echo "$HOME/.local/bin/herdr-app")}"
+ZOOMED_BY_US=0
+PICKER_IS_OURS=0
+
+say() { [ "$QUIET" -eq 1 ] || printf '%s\n' "$*"; }
+
+keys() { "$HC" keys "$TERMINAL" "$@" >/dev/null 2>&1; }
+toggle_zoom() { "$HERDR_APP" do pane.zoom --pane "$PANE" >/dev/null 2>&1; }
+
+cleanup() {
+	# Never leave a picker we opened, or a zoom we applied, behind.
+	if [ "$PICKER_IS_OURS" -eq 1 ]; then
+		# Only send keys if the terminal still hosts the very session we opened
+		# the picker on. If the agent was replaced, its successor must not
+		# receive a stray escape.
+		local cur cur_rest
+		cur="$(identity)"
+		cur_rest="${cur#*|}"
+		if [ -n "${AGENT_SESSION:-}" ] && [ "${cur%%|*}" = "${AGENT_KIND:-}" ] \
+			&& [ "${cur_rest%%|*}" = "$AGENT_SESSION" ]; then
+			keys esc
+			sleep 0.2
+		fi
+		PICKER_IS_OURS=0
+	fi
+	[ "$ZOOMED_BY_US" -eq 1 ] && toggle_zoom
+	rm -rf "${LOCK:-/nonexistent}" 2>/dev/null
+}
+
+die() { [ "$QUIET" -eq 1 ] || printf '%s\n' "$1" >&2; exit "${2:-4}"; }
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--terminal) TERMINAL="${2:-}"; shift 2 ;;
+		--pane) PANE="${2:-}"; shift 2 ;;
+		--zoomed) ALREADY_ZOOMED=1; shift ;;
+		--scope) SCOPE="${2:-}"; shift 2 ;;
+		--timeout) TIMEOUT="${2:-}"; shift 2 ;;
+		--skip-ultracode) SKIP_ULTRACODE=1; shift ;;
+		--allow-ultracode) SKIP_ULTRACODE=0; shift ;;
+		--quiet) QUIET=1; shift ;;
+		-h|--help) sed -n '2,45p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
+		*) die "unknown argument: $1" 4 ;;
+	esac
+done
+
+[ -n "$TERMINAL" ] || die "no terminal: pass --terminal" 4
+[ -x "$HC" ] || command -v "$HC" >/dev/null 2>&1 || die "hc not found (tried '$HC'); set HC_BIN" 4
+case "$SCOPE" in session|default) ;; *) die "--scope must be session or default" 4 ;; esac
+
+screen_text() { "$HC" read "$TERMINAL" 2>/dev/null; }
+picker_open() { screen_text | tail -"$PICKER_TAIL" | grep -qaE "$PICKER_RE"; }
+
+# "<agent kind>|<session: the foreground pid>|<rows>" for the target terminal.
+identity() {
+	"$HC" get "$TERMINAL" --json 2>/dev/null | python3 -I -c '
+import sys, json, os
+try:
+    t = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+fg = t.get("foreground") or {}
+argv = fg.get("argv") or []
+names = [os.path.basename(a) for a in argv[:2]]
+kind = "claude" if names[:1] == ["claude"] or (names[:1] in (["node"], ["bun"]) and names[1:2] == ["claude"]) else (names[0] if names else "")
+print("%s|%s|%s" % (kind, fg.get("pid", ""), t.get("rows", 0)))
+' 2>/dev/null
+}
+
+# Effort as shown in the status footer. Rendered only while the picker is
+# closed, and only when the current model supports reasoning effort, which
+# is exactly the gate we want. The draft line is skipped so its text cannot
+# be mistaken for a level.
+footer_level() {
+	# Scan the bottom few separator lines rather than assuming the status line
+	# is last: the permission-mode line below it also carries "·" once it gains
+	# a "· <- N agents" suffix. Keep only a last field that is a real level.
+	screen_text | grep -a '·' | grep -av '^[[:space:]]*❯' | tail -6 \
+		| awk '{print $NF}' | grep -aE "^($LEVELS)$" | tail -1
+}
+
+# Effort as shown inside the open picker. A short pane truncates the picker
+# and drops this row; we zoom to bring it back rather than guessing.
+picker_level() {
+	screen_text | grep -oaE '(Low|Medium|High|xHigh|Max|Ultracode) effort' \
+		| head -1 | sed 's/ effort$//' | tr 'A-Z' 'a-z'
+}
+
+# The ❯ cursor row must also carry the ✔ active marker, proving the cursor
+# still sits on the running model and that confirming cannot switch models.
+cursor_on_active_model() {
+	screen_text | grep -aE '❯[[:space:]]*[0-9]+\.' | head -1 | grep -qa '✔'
+}
+
+# Serialise presses on the same terminal. A rapid second press queues behind
+# the first rather than being dropped, so every press advances one step; only a
+# genuine pile-up past the deadline is refused.
+LOCK="${TMPDIR:-/tmp}/claude-cycle-effort-hc.$(printf '%s' "$TERMINAL" | tr -c 'A-Za-z0-9' '_').lock"
+LOCK_WAIT_TICKS="${CLAUDE_CYCLE_EFFORT_LOCK_TICKS:-120}"   # ticks of 0.1s
+lock_tick=0
+until mkdir "$LOCK" 2>/dev/null; do
+	# Reclaim a lock orphaned by a killed run.
+	if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+		rm -rf "$LOCK" 2>/dev/null
+		continue
+	fi
+	lock_tick=$((lock_tick + 1))
+	[ "$lock_tick" -ge "$LOCK_WAIT_TICKS" ] \
+		&& die "cycles are queued more than ${LOCK_WAIT_TICKS}00ms deep for $TERMINAL; dropping this press" 3
+	sleep 0.1
+done
+trap cleanup EXIT
+
+# ---- preflight: decide everything before sending a single key --------------
+
+IDENTITY="$(identity)" || die "cannot read terminal $TERMINAL" 4
+[ -n "$IDENTITY" ] || die "cannot read terminal $TERMINAL" 4
+AGENT_KIND="${IDENTITY%%|*}"
+REST="${IDENTITY#*|}"
+AGENT_SESSION="${REST%%|*}"
+VIEWPORT_ROWS="${REST##*|}"
+
+[ "$AGENT_KIND" = "claude" ] || die "terminal $TERMINAL runs '${AGENT_KIND:-nothing}', not claude; nothing sent" 2
+
+# A picker or dialog already owning input is a hard no-op: the user may have
+# navigated to another model, and confirming would change it.
+! picker_open || die "a picker already owns $TERMINAL; nothing sent" 2
+
+FROM="$(footer_level)"
+[ -n "$FROM" ] || die "no effort indicator in $TERMINAL (model has no effort, or a dialog owns it); nothing sent" 2
+
+# ---- open the picker -------------------------------------------------------
+
+open_picker() {
+	keys alt+e || die "hc keys alt+e failed" 4
+	PICKER_IS_OURS=1
+	local waited=0
+	until picker_open; do
+		waited=$((waited + 100))
+		[ "$waited" -ge "$TIMEOUT" ] && die "model picker did not open for $TERMINAL" 2
+		sleep 0.1
+	done
+}
+
+open_picker
+
+# A short pane truncates the picker and hides the effort row. Zoom so the row
+# renders, because we refuse to confirm a change we cannot observe.
+if [ -z "$(picker_level)" ]; then
+	keys esc
+	PICKER_IS_OURS=0
+	[ -n "$PANE" ] && [ "$ALREADY_ZOOMED" -eq 0 ] \
+		|| die "effort row hidden in $TERMINAL (${VIEWPORT_ROWS} rows) and no pane to zoom; nothing changed" 2
+	sleep 0.3
+	toggle_zoom && ZOOMED_BY_US=1
+	sleep 0.4
+	open_picker
+	[ -n "$(picker_level)" ] \
+		|| die "effort row never rendered in $TERMINAL (${VIEWPORT_ROWS} rows); nothing changed" 2
+fi
+
+cursor_on_active_model \
+	|| die "picker cursor is not on the active model in $TERMINAL; nothing changed" 2
+
+BEFORE="$(picker_level)"
+[ -n "$BEFORE" ] || die "cannot read current effort in $TERMINAL; nothing changed" 2
+
+# ---- advance, and only then confirm ---------------------------------------
+
+keys right || die "hc keys right failed" 4
+
+# Wait up to ~1.2s for the picker's level to move off $1; prints the level it shows.
+level_after() {
+	local now=""
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		sleep 0.12
+		now="$(picker_level)"
+		[ -n "$now" ] && [ "$now" != "$1" ] && break
+	done
+	printf '%s' "$now"
+}
+
+# Newer pickers stop at the top level instead of wrapping. From the top, step
+# left one level at a time, watching each step, down to the lowest; prints it.
+wrap_down() {
+	local at="$1" step
+	for _ in 1 2 3 4 5 6 7; do
+		keys left || return 1
+		step="$(level_after "$at")"
+		[ -n "$step" ] && [ "$step" != "$at" ] || break
+		at="$step"
+	done
+	printf '%s' "$at"
+}
+
+AFTER="$(level_after "$BEFORE")"
+if [ -z "$AFTER" ] || [ "$AFTER" = "$BEFORE" ]; then
+	case "$BEFORE" in max|ultracode) ;; *) die "effort did not change in $TERMINAL; not confirming" 2 ;; esac
+	AFTER="$(wrap_down "$BEFORE")" || die "hc keys left failed" 4
+fi
+[ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ] \
+	|| die "effort did not change in $TERMINAL; not confirming" 2
+
+if [ "$SKIP_ULTRACODE" -eq 1 ] && [ "$AFTER" = "ultracode" ]; then
+	keys right
+	NEXT="$(level_after ultracode)"
+	# Ultracode at the top: past it is the bottom.
+	if [ -z "$NEXT" ] || [ "$NEXT" = "ultracode" ]; then
+		NEXT="$(wrap_down ultracode)" || die "hc keys left failed" 4
+	fi
+	[ -n "$NEXT" ] && [ "$NEXT" != "ultracode" ] || die "could not step past ultracode; not confirming" 2
+	AFTER="$NEXT"
+fi
+
+# The terminal must still host the same Claude process we inspected in
+# preflight. Compare kind and pid only: zooming legitimately changes the rows.
+NOW="$(identity)"
+NOW_REST="${NOW#*|}"
+[ "${NOW%%|*}" = "$AGENT_KIND" ] && [ "${NOW_REST%%|*}" = "$AGENT_SESSION" ] \
+	|| die "terminal $TERMINAL changed agent mid-cycle; not confirming" 2
+
+cursor_on_active_model || die "picker cursor moved off the active model; not confirming" 2
+
+case "$SCOPE" in session) ACCEPT=s ;; default) ACCEPT=enter ;; esac
+keys "$ACCEPT" || die "hc keys $ACCEPT failed" 4
+
+CLOSED=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	sleep 0.12
+	picker_open || { CLOSED=1; break; }
+done
+if [ "$CLOSED" -eq 1 ]; then
+	PICKER_IS_OURS=0
+else
+	die "picker did not close for $TERMINAL" 2
+fi
+
+# The picker is authoritative. The footer collapses ultracode to "xhigh",
+# so it is only a health check that the session came back up.
+[ -n "$(footer_level)" ] || say "warning: no effort shown in the footer after the change"
+
+say "effort: $BEFORE -> $AFTER ($SCOPE, $TERMINAL)"

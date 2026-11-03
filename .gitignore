@@ -11,6 +11,10 @@
 *token*
 *auth.json
 
+# Written into a mod folder whenever Herdr or `herdr-app check` loads it
+herdr-app/home/mods/*/gpui-kit.d.ts
+herdr-app/home/mods/*/jsconfig.json
+
 # Runtime output
 *.log
 .DS_Store

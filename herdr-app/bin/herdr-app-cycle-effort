@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""herdr-app-cycle-effort: route Cmd+Shift+E in herdr-app to the agent in one hc terminal.
+
+herdr-app's `effort-cycle` mod runs this detached, with the terminal that was focused
+at the keypress (and its pane, so a short Claude pane can be zoomed). It ports
+~/.config/herdr/shortcuts/cycle-effort.py, which used the old `herdr agent` CLI.
+
+  claude  ~/.local/bin/claude-cycle-effort-hc drives Claude Code's model picker
+  codex   alt+shift+e for an unchanged managed shortcuts build, else upstream alt+.
+  pi      alt+shift+e
+  other   nothing is sent
+
+Usage: herdr-app-cycle-effort --terminal t7 [--pane <herdr-app pane id>] [--zoomed]
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+CODEX_CAPABILITIES_PATH = Path.home() / ".local/share/codex-shortcuts/capabilities.json"
+AGENTS = ("claude", "codex", "pi")
+INTERPRETERS = ("node", "bun", "deno", "python", "python3")
+
+
+def hc_bin():
+	return shutil.which("hc") or str(Path.home() / ".local/bin/hc")
+
+
+def terminal_info(terminal, hc, run=subprocess.run):
+	result = run([hc, "get", terminal, "--json"], check=True, capture_output=True, text=True, timeout=5)
+	return json.loads(result.stdout)
+
+
+def agent_kind(info):
+	"""The agent in the terminal's foreground, from its argv (hc doesn't classify it)."""
+	argv = (info.get("foreground") or {}).get("argv") or []
+	if not argv:
+		return None
+	first = Path(argv[0]).name
+	if first in AGENTS:
+		return first
+	if first in INTERPRETERS and len(argv) > 1 and Path(argv[1]).name in AGENTS:
+		return Path(argv[1]).name
+	return None
+
+
+def codex_effort_key(info, run=subprocess.run, capabilities_path=None):
+	"""Only send the custom key to an identified, unchanged managed executable."""
+	path = capabilities_path or CODEX_CAPABILITIES_PATH
+	try:
+		capabilities = json.loads(path.read_text())
+		if not isinstance(capabilities, dict):
+			return "alt+."
+		pid = int((info.get("foreground") or {}).get("pid") or 0)
+		if pid > 0:
+			result = run(["/bin/ps", "-p", str(pid), "-o", "comm="],
+				check=True, capture_output=True, text=True, timeout=5)
+			executable = Path(result.stdout.strip())
+			record = capabilities.get(str(executable))
+			if record:
+				stat = executable.stat()
+				actual = [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns]
+				if actual == record["fingerprint"]:
+					return "alt+shift+e"
+	except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+		pass
+	# Stock, old sessions, missing manifest, and failed detection all use the
+	# upstream increase shortcut. It stops at the upper bound; it cannot wrap.
+	return "alt+."
+
+
+def cycle(terminal, pane=None, zoomed=False, hc=None, run=subprocess.run):
+	hc = hc or hc_bin()
+	info = terminal_info(terminal, hc, run)
+	if info.get("address") not in (terminal, None) and not terminal.endswith("/" + str(info.get("address"))):
+		raise RuntimeError(f"hc returned a different terminal: {info.get('address')}")
+	kind = agent_kind(info)
+	if kind == "claude":
+		command = [str(Path.home() / ".local/bin/claude-cycle-effort-hc"), "--terminal", terminal]
+		if pane:
+			command += ["--pane", pane]
+		if zoomed:
+			command.append("--zoomed")
+	elif kind == "codex":
+		command = [hc, "keys", terminal, codex_effort_key(info, run)]
+	elif kind == "pi":
+		command = [hc, "keys", terminal, "alt+shift+e"]
+	else:
+		return
+	# The Claude adapter owns its bounded waits and cleanup. Killing it here
+	# could leave its temporary picker or zoom in place.
+	result = run(command, check=False)
+	if result.returncode not in ((0, 2) if kind == "claude" else (0,)):
+		raise subprocess.CalledProcessError(result.returncode, command)
+
+
+def main():
+	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+	parser.add_argument("--terminal", required=True, help="hc address, e.g. t7")
+	parser.add_argument("--pane", help="herdr-app pane showing the terminal")
+	parser.add_argument("--zoomed", action="store_true", help="the pane's tab is already zoomed")
+	args = parser.parse_args()
+	cycle(args.terminal, args.pane, args.zoomed)
+
+
+if __name__ == "__main__":
+	main()

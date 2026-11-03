@@ -1,0 +1,32 @@
+#!/bin/bash
+# herdr-app-grid quad|dual [dir]: a new herdr-app tab in the calling terminal's space,
+# split 2x2 (quad) or side by side (dual), every pane starting in dir (default: $PWD).
+# The herdr-app branch of ghostty-quad / ghostty-dual (the 4x4 and 2x2 aliases).
+# Exits 3 when not run from a herdr-app terminal, so callers can fall back.
+set -euo pipefail
+
+mode="${1:-}"
+dir="${2:-$PWD}"
+case "$mode" in quad|dual) ;; *) echo "usage: herdr-app-grid quad|dual [dir]" >&2; exit 2 ;; esac
+
+[ -n "${HC_TERMINAL_ID:-}" ] || exit 3
+command -v herdr-app >/dev/null 2>&1 || exit 3
+space="$(hc get "$HC_TERMINAL_ID" --json 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("labels", {}).get("herdr.space", ""))' 2>/dev/null || true)"
+[ -n "$space" ] || exit 3
+
+json() { python3 -I -c "import json,sys; print(json.load(sys.stdin)$1)"; }
+pane_of() {
+	herdr-app ls | python3 -I -c "
+import json, sys
+d = json.load(sys.stdin)
+print(next(x['pane'] for s in d['spaces'] for t in s['tabs'] for x in t['terminals'] if x['terminal'] == sys.argv[1]))" "$1"
+}
+
+made="$(herdr-app do tab.new --space "$space" --folder "$dir")"
+tl="$(pane_of "$(printf '%s' "$made" | json '["terminal"]')")"
+tr="$(herdr-app do pane.split --direction right --pane "$tl" | json '["pane"]')"
+if [ "$mode" = quad ]; then
+	herdr-app do pane.split --direction down --pane "$tl" >/dev/null
+	herdr-app do pane.split --direction down --pane "$tr" >/dev/null
+fi
+herdr-app do pane.focus --pane "$tl" >/dev/null

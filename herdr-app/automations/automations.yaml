@@ -1,0 +1,3 @@
+# herdr-automations: runs open in the Herdr desktop app (herdr-core).
+backend: hc
+automations: []
