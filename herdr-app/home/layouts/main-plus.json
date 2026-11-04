@@ -14,7 +14,7 @@
           "id": "brand",
           "type": "block",
           "content": {
-            "mod": "workspace-chrome"
+            "mod": "workspace-chrome-plus"
           },
           "size": {
             "px": 46
@@ -40,7 +40,7 @@
               "id": "agents",
               "type": "block",
               "content": {
-                "mod": "agents"
+                "mod": "agents-plus"
               },
               "size": {
                 "weight": 1

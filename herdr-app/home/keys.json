@@ -99,6 +99,7 @@
     "cmd-e": "send:\u001be"
   },
   "layout:main-plus": {
-    "cmd-shift-g": "tabs-plus.graph"
+    "cmd-shift-g": "tabs-plus.graph",
+    "cmd-shift-h": "tabs-plus.changes"
   }
 }
