@@ -112,6 +112,10 @@ When I ask for "deep research" / a "research report" / to "deeply research" some
 3. **Keep the same architecture:** Scope → Search → Fetch → Verify → Synthesize.
 4. To adjust Claude Code's cost/quality dial, edit the `MODEL_*` constants at the top of `deep-research-lean.js`.
 
+## Memory
+
+Do not use persistent memory. Never read from or write to the memory directory or `MEMORY.md`, even when the harness suggests saving something. If something seems worth keeping, tell me and I'll decide where it goes.
+
 ## Tech preferences
 
 Defaults for new projects. A project's own `CLAUDE.md` may override.
