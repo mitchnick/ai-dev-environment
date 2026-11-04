@@ -1,7 +1,7 @@
 # Codex
 
 Sanitized snapshot of the local configuration, captured September 10, 2026.
-Local skill discovery and invocation guidance updated September 11, 2026.
+Local skill discovery and invocation guidance updated September 13, 2026.
 
 ## Configuration
 
@@ -70,39 +70,53 @@ through a shared `.agents` directory. Individual skills are also excluded here.
 
 ### Invoke and verify
 
-With these shared instructions loaded, the preferred shorthand is to submit
-the literal text `\create-pr` in the Codex composer. A message beginning with
-`\skill-name` and optional arguments tells the agent to resolve that exact
-skill name, read its `SKILL.md` in full, and follow it with those arguments.
-The agent must report a missing skill instead of guessing. Quoted examples and
-questions about the syntax are not invocations.
+Pulling this repository does not update installed instructions. Merge the
+`Local skills in Codex` section from `config/AGENTS.md` into the actual file
+loaded as `~/.codex/AGENTS.md`. If it links to `~/.claude/CLAUDE.md`, update
+that target while preserving your other local instructions. Start a fresh
+Codex session to load the change.
 
-The shorthand applies to all discovered skills, both project and globally
-available skills, including future additions, with optional arguments. No
-per-skill aliases or edits are needed. Examples include `\components`,
-`\search-docs how do we test background jobs`, and `\asb-positioning`.
+For global Claude skills missing from Codex, add individual relative symlinks
+under `~/.agents/skills/` pointing to their directories in `~/.claude/skills/`.
+Preserve existing skills with the same name, and skip broken source links.
+Avoid linking the entire Claude skills directory back into the agents skills
+directory: Claude skills may already link to it. The shared instructions also
+allow resolving missing global skills directly from `~/.claude/skills/`.
 
-This personal shorthand is ordinary text interpreted through instructions;
-it has no native command completion. Codex's slash-command parser only treats
-a leading forward slash as a command, so a backslash bypasses unknown-command
-rejection. No Codex binary or hook-code change was needed for this shorthand.
+The [skill slash-menu patch](patches/skills-slash-menu.md) for Codex CLI
+0.154.0 exposes every enabled skill from the native catalog in the `/` menu.
+Type `/create-pr` or a prefix such as `/cre`; Tab inserts a native `$create-pr`
+mention bound to the selected file, and Enter submits it. Existing arguments,
+attachments, and other mentions are preserved. Exact `/skill-name arguments`
+input also works without choosing a menu item.
 
-Native Codex invocation remains `$skill-name`, such as `$create-pr`, or the
-`/skills` picker. Claude Code's `/create-pr` is rejected as an unrecognized
-Codex command. Discovery and the personal shorthand do not register a
-`/create-pr` slash-command alias.
+Built-in commands keep their names. A skill named `model`, for example, appears
+as `/skill:model`; if that name is also taken, another `skill:` prefix is added.
+Duplicate skill names use the first enabled entry in catalog order. Disabled
+skills are omitted, and catalog refreshes update the menu. No per-skill aliases
+or generated prompt files are needed.
+
+Namespaced plugin entries keep their full `/plugin:skill-name` menu label.
+Completion uses `$skill-name` with the exact plugin skill path, because this
+version's native mention codec does not accept colons in mention names.
+
+This requires the custom CLI binary; it does not change the desktop app or
+stock Codex. Stock invocation remains `$skill-name` or `/skills`. The literal
+`\skill-name` instruction shorthand remains available as submitted text, without
+completion. Updating instructions alone cannot add native slash commands.
 
 Verify discovery and invocation separately:
 
 1. Open Codex in the project and check its native skill catalog. For an
    app-server check, request `skills/list` for the project cwd with
    `forceReload: true`; check both the returned skill names and load errors.
-2. Open `/skills`, or type `$create-pr` and confirm its completion resolves to
-   the intended skill. Dismiss the picker or clear the draft without submitting
-   it. Do not execute the PR workflow merely to test discovery.
+2. Type a skill prefix in the `/` menu and press Tab. Confirm the resulting
+   `$skill-name` mention resolves to the intended skill. Dismiss the picker or
+   clear the draft without submitting it. Do not execute the PR workflow merely
+   to test discovery.
 3. For an end-to-end execution check, use a harmless diagnostic skill that only
-   returns a marker. Submit `\skill-name` to verify the instruction shorthand;
-   use `$skill-name` to verify native invocation. Do not use `create-pr` for
+   returns a marker. Submit `/skill-name` to verify slash invocation; use
+   `$skill-name` to compare native invocation. Do not use `create-pr` for
    either execution check.
 
 If the native catalog has not refreshed, start a fresh session. Agents can also

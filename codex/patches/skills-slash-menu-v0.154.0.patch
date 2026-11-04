@@ -1,0 +1,763 @@
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer.rs b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+index 967c712..eeb4057 100644
+--- a/codex-rs/tui/src/bottom_pane/chat_composer.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+@@ -13,6 +13,10 @@
+ //! By default, `@` lists plugins, filesystem entries, and skills. Skills are hidden when their
+ //! owning plugin is listed. `$` lists individual skills and apps, but not plugins.
+ //! Disabling `mentions_v2` restores file-only `@` search and adds plugins back to `$`.
++//! `/` also lists enabled skills. Tab completes a skill to a bound `$name` mention;
++//! Enter submits it through normal input handling. Exact `/name` submissions with arguments
++//! use the same binding, including queued input. Built-in command names remain reserved;
++//! conflicting skills use `/skill:name`. Plain-text composers keep slash text literal.
+ //!
+ //! # Key Event Routing
+ //!
+@@ -311,6 +315,7 @@ mod inline_input;
+ mod popup_state;
+ mod reconnect;
+ mod slash_input;
++pub(super) mod slash_skills;
+ mod sparkle;
+ mod vim_history;
+ mod vim_search;
+@@ -608,6 +613,7 @@ impl ChatComposer {
+             self.draft.is_bash_mode,
+             self.builtin_command_flags(),
+             &self.service_tier_commands,
++            self.skills.as_deref().unwrap_or_default(),
+         )
+     }
+ 
+@@ -794,6 +800,9 @@ impl ChatComposer {
+ 
+     pub fn set_skill_mentions(&mut self, skills: Option<Vec<SkillMetadata>>) {
+         self.skills = skills;
++        if matches!(self.popups.active, ActivePopup::Command(_)) {
++            self.popups.active = ActivePopup::None;
++        }
+         self.refresh_mentions_v2_popup_candidates();
+         self.sync_popups();
+     }
+@@ -3212,6 +3221,7 @@ impl ChatComposer {
+             if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
+                 self.handle_paste(pasted);
+             }
++            self.expand_typed_slash_skill();
+             let visible_shell_command = self.is_bang_shell_command();
+             let original_input = self.current_text();
+             let original_text_elements = self.current_text_elements();
+@@ -3267,6 +3277,8 @@ impl ChatComposer {
+             return (InputResult::None, true);
+         }
+ 
++        self.expand_typed_slash_skill();
++
+         // If the first line is a bare built-in slash command (no args),
+         // dispatch it even when the slash popup isn't visible. This preserves
+         // the workflow: type a prefix ("/di"), press Tab to complete to
+@@ -9525,6 +9537,7 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "model")
+                 }
++                Some(CommandItem::Skill(skill)) => panic!("unexpected skill: {skill:?}"),
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected model command, got service tier {command:?}")
+                 }
+@@ -9607,6 +9620,7 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "resume")
+                 }
++                Some(CommandItem::Skill(skill)) => panic!("unexpected skill: {skill:?}"),
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected resume command, got service tier {command:?}")
+                 }
+@@ -9661,6 +9675,7 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "pets")
+                 }
++                Some(CommandItem::Skill(skill)) => panic!("unexpected skill: {skill:?}"),
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected pets command, got service tier {command:?}")
+                 }
+@@ -9715,6 +9730,7 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "btw")
+                 }
++                Some(CommandItem::Skill(skill)) => panic!("unexpected skill: {skill:?}"),
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected btw command, got service tier {command:?}")
+                 }
+@@ -9769,6 +9785,7 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "side")
+                 }
++                Some(CommandItem::Skill(skill)) => panic!("unexpected skill: {skill:?}"),
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected side command, got service tier {command:?}")
+                 }
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs b/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs
+index 22fce85..48ce313 100644
+--- a/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs
+@@ -2,6 +2,9 @@
+ 
+ use std::ops::Range;
+ 
++use super::slash_skills::skill_commands;
++use codex_app_server_protocol::SkillMetadata;
++
+ use crossterm::event::KeyCode;
+ use crossterm::event::KeyEvent;
+ use crossterm::event::KeyModifiers;
+@@ -48,6 +51,7 @@ pub(super) struct SlashInput<'a> {
+     is_bash_mode: bool,
+     command_flags: BuiltinCommandFlags,
+     service_tier_commands: &'a [ServiceTierCommand],
++    skills: &'a [SkillMetadata],
+ }
+ 
+ impl<'a> SlashInput<'a> {
+@@ -56,12 +60,14 @@ impl<'a> SlashInput<'a> {
+         is_bash_mode: bool,
+         command_flags: BuiltinCommandFlags,
+         service_tier_commands: &'a [ServiceTierCommand],
++        skills: &'a [SkillMetadata],
+     ) -> Self {
+         Self {
+             enabled,
+             is_bash_mode,
+             command_flags,
+             service_tier_commands,
++            skills,
+         }
+     }
+ 
+@@ -166,6 +172,9 @@ impl<'a> SlashInput<'a> {
+         }
+ 
+         has_slash_command_prefix(name, self.command_flags, self.service_tier_commands)
++            || skill_commands(self.skills, self.service_tier_commands)
++                .iter()
++                .any(|skill| skill.name.to_lowercase().starts_with(&name.to_lowercase()))
+     }
+ 
+     pub(super) fn command_popup(&self, filter_text: &str) -> CommandPopup {
+@@ -184,6 +193,7 @@ impl<'a> SlashInput<'a> {
+             },
+             self.service_tier_commands.to_vec(),
+         );
++        command_popup.set_skills(skill_commands(self.skills, self.service_tier_commands));
+         command_popup.on_composer_text_change(filter_text.to_string());
+         command_popup
+     }
+@@ -283,6 +293,10 @@ impl ChatComposer {
+                     .unwrap_or_else(|| first_line.clone());
+                 popup.on_composer_text_change(filter_text);
+                 if let Some(selected_cmd) = popup.selected_item() {
++                    if let CommandItem::Skill(skill) = &selected_cmd {
++                        self.complete_slash_skill(skill);
++                        return (InputResult::None, true);
++                    }
+                     if selected_command_dispatches_immediately_on_tab(&selected_cmd)
+                         && let CommandItem::Builtin(cmd) = &selected_cmd
+                     {
+@@ -333,6 +347,10 @@ impl ChatComposer {
+                     .unwrap_or_else(|| first_line.clone());
+                 popup.on_composer_text_change(filter_text);
+                 if let Some(selected_cmd) = popup.selected_item() {
++                    if let CommandItem::Skill(skill) = &selected_cmd {
++                        self.complete_slash_skill(skill);
++                        return (InputResult::None, true);
++                    }
+                     if self
+                         .complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
+                             &selected_cmd,
+@@ -370,12 +388,16 @@ impl ChatComposer {
+                                     |(_, args, _)| parent_owned_command_is_allowed(*cmd, args),
+                                 )
+                             }
+-                            CommandItem::ServiceTier(_) => false,
++                            CommandItem::ServiceTier(_) | CommandItem::Skill(_) => false,
+                         };
+                         if !command_is_allowed {
+                             return (InputResult::ParentOwnedInputBlocked, true);
+                         }
+                     }
++                    if let CommandItem::Skill(skill) = &sel {
++                        self.complete_slash_skill(skill);
++                        return self.handle_submission(/*should_queue*/ false);
++                    }
+                     if self
+                         .complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
+                             &sel,
+@@ -390,6 +412,7 @@ impl ChatComposer {
+                     self.draft.is_bash_mode = false;
+                     return (
+                         match sel {
++                            CommandItem::Skill(_) => unreachable!("skills use normal submission"),
+                             CommandItem::Builtin(cmd) => InputResult::Command(cmd),
+                             CommandItem::ServiceTier(command) => {
+                                 InputResult::ServiceTierCommand(command)
+diff --git a/codex-rs/tui/src/bottom_pane/command_popup.rs b/codex-rs/tui/src/bottom_pane/command_popup.rs
+index 81cc801..6a3cae5 100644
+--- a/codex-rs/tui/src/bottom_pane/command_popup.rs
++++ b/codex-rs/tui/src/bottom_pane/command_popup.rs
+@@ -1,3 +1,4 @@
++use super::chat_composer::slash_skills::SkillCommand;
+ use ratatui::buffer::Buffer;
+ use ratatui::layout::Rect;
+ use ratatui::widgets::WidgetRef;
+@@ -31,6 +32,7 @@ const COMMAND_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
+ pub(crate) enum CommandItem {
+     Builtin(SlashCommand),
+     ServiceTier(ServiceTierCommand),
++    Skill(SkillCommand),
+ }
+ 
+ pub(crate) struct CommandPopup {
+@@ -92,6 +94,13 @@ impl CommandPopup {
+         }
+     }
+ 
++    pub(crate) fn set_skills(&mut self, skills: Vec<SkillCommand>) {
++        self.commands
++            .retain(|item| !matches!(item, CommandItem::Skill(_)));
++        self.commands
++            .extend(skills.into_iter().map(CommandItem::Skill));
++    }
++
+     /// Update the filter string based on the current composer text. The text
+     /// passed in is expected to start with a leading '/'. Everything after the
+     /// *first* '/' on the *first* line becomes the active filter that is used
+@@ -214,7 +223,8 @@ impl CommandPopup {
+                     match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
+                     display_shortcut: None,
+                     description: Some(description),
+-                    category_tag: None,
++                    category_tag: matches!(item, CommandItem::Skill(_))
++                        .then(|| "[Skill]".to_string()),
+                     wrap_indent: None,
+                     is_disabled: false,
+                     disabled_reason: None,
+@@ -252,6 +262,7 @@ impl CommandItem {
+         match self {
+             Self::Builtin(cmd) => cmd.command(),
+             Self::ServiceTier(command) => &command.name,
++            Self::Skill(skill) => &skill.name,
+         }
+     }
+ 
+@@ -259,6 +270,7 @@ impl CommandItem {
+         match self {
+             Self::Builtin(cmd) => cmd.description(),
+             Self::ServiceTier(command) => &command.description,
++            Self::Skill(skill) => &skill.description,
+         }
+     }
+ }
+@@ -297,7 +309,7 @@ mod tests {
+         let matches = popup.filtered_items();
+         let has_init = matches.iter().any(|item| match item {
+             CommandItem::Builtin(cmd) => cmd.command() == "init",
+-            CommandItem::ServiceTier(_) => false,
++            CommandItem::ServiceTier(_) | CommandItem::Skill(_) => false,
+         });
+         assert!(
+             has_init,
+@@ -315,6 +327,7 @@ mod tests {
+         let selected = popup.selected_item();
+         match selected {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "init"),
++            Some(CommandItem::Skill(skill)) => panic!("unexpected skill: {skill:?}"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected init command, got service tier {command:?}")
+             }
+@@ -329,6 +342,7 @@ mod tests {
+         let matches = popup.filtered_items();
+         match matches.first() {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "model"),
++            Some(CommandItem::Skill(skill)) => panic!("unexpected skill: {skill:?}"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected model command, got service tier {command:?}")
+             }
+@@ -380,6 +394,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Skill(skill) => skill.name,
+             })
+             .collect();
+         assert_eq!(
+@@ -443,6 +458,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Skill(skill) => skill.name,
+             })
+             .collect();
+         assert!(
+@@ -518,6 +534,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Skill(skill) => skill.name,
+             })
+             .collect();
+         assert!(
+@@ -547,6 +564,7 @@ mod tests {
+ 
+         match popup.selected_item() {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "plan"),
++            Some(CommandItem::Skill(skill)) => panic!("unexpected skill: {skill:?}"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected plan command, got service tier {command:?}")
+             }
+@@ -579,6 +597,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Skill(skill) => skill.name,
+             })
+             .collect();
+         assert!(
+@@ -608,6 +627,7 @@ mod tests {
+ 
+         match popup.selected_item() {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "personality"),
++            Some(CommandItem::Skill(skill)) => panic!("unexpected skill: {skill:?}"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected personality command, got service tier {command:?}")
+             }
+@@ -624,6 +644,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Skill(skill) => skill.name,
+             })
+             .collect();
+ 
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer/slash_skills.rs b/codex-rs/tui/src/bottom_pane/chat_composer/slash_skills.rs
+new file mode 100644
+index 0000000..2971637
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/slash_skills.rs
+@@ -0,0 +1,121 @@
++//! Skill entries in the slash menu, resolved into native, path-bound mentions.
++
++use std::collections::HashSet;
++use std::str::FromStr;
++
++use codex_app_server_protocol::SkillMetadata;
++
++use super::ChatComposer;
++use super::draft_state::ComposerMentionBinding;
++use crate::bottom_pane::prompt_args::parse_slash_name;
++use crate::bottom_pane::slash_commands::ServiceTierCommand;
++use crate::skills_helpers::skill_description;
++use crate::slash_command::SlashCommand;
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) struct SkillCommand {
++    pub(crate) name: String,
++    pub(crate) skill_name: String,
++    pub(crate) description: String,
++    pub(crate) path: String,
++}
++
++pub(crate) fn skill_commands(
++    skills: &[SkillMetadata],
++    service_tiers: &[ServiceTierCommand],
++) -> Vec<SkillCommand> {
++    let mut seen = HashSet::new();
++    let mut commands = Vec::new();
++    // Reserve real skill names before assigning collision aliases.
++    let mut reserved: HashSet<String> = skills.iter().map(|skill| skill.name.clone()).collect();
++    reserved.extend(service_tiers.iter().map(|tier| tier.name.clone()));
++    for skill in skills.iter().filter(|skill| skill.enabled) {
++        if !seen.insert(&skill.name) {
++            continue;
++        }
++        let mut name = skill.name.clone();
++        if SlashCommand::from_str(&name).is_ok()
++            || service_tiers.iter().any(|tier| tier.name == name)
++            || name
++                .strip_prefix('g')
++                .and_then(|rest| rest.strip_suffix("al"))
++                .is_some_and(|middle| !middle.is_empty() && middle.bytes().all(|byte| byte == b'o'))
++        {
++            loop {
++                name = format!("skill:{name}");
++                if reserved.insert(name.clone()) {
++                    break;
++                }
++            }
++        }
++        commands.push(SkillCommand {
++            name,
++            skill_name: skill.name.clone(),
++            description: skill_description(skill).to_string(),
++            path: skill.path.display().to_string(),
++        });
++    }
++    commands.sort_by(|left, right| left.name.cmp(&right.name));
++    commands
++}
++
++impl ChatComposer {
++    pub(super) fn complete_slash_skill(&mut self, skill: &SkillCommand) {
++        let text = self.draft.textarea.text();
++        let token_end = text.find(char::is_whitespace).unwrap_or(text.len());
++        let needs_separator = token_end == text.len();
++        // Preserve the argument bytes and elements exactly, including their whitespace.
++        // The native mention codec accepts bare names, not plugin namespace colons.
++        // Keep the catalog name in the menu and bind the short mention to the exact path.
++        let mention_name = skill
++            .skill_name
++            .rsplit(':')
++            .next()
++            .unwrap_or(&skill.skill_name);
++        let mention = format!("${mention_name}");
++        self.draft.textarea.replace_range(0..token_end, "");
++        self.draft.textarea.set_cursor(/*pos*/ 0);
++        let id = self.draft.textarea.insert_element(&mention);
++        self.draft.mention_bindings.insert(
++            id,
++            ComposerMentionBinding {
++                sigil: '$',
++                mention: mention_name.to_string(),
++                path: skill.path.clone(),
++            },
++        );
++        if needs_separator {
++            self.draft.textarea.insert_str(" ");
++        }
++        self.draft
++            .textarea
++            .set_cursor(self.draft.textarea.text().len());
++        self.dismiss_completed_prefixed_token('$', 0..mention.len(), &mention);
++    }
++
++    pub(super) fn expand_typed_slash_skill(&mut self) {
++        if !self.slash_commands_enabled() || self.draft.is_bash_mode {
++            return;
++        }
++        let text = self.draft.textarea.text();
++        if !text.starts_with('/') {
++            return;
++        }
++        let Some((name, _, _)) = parse_slash_name(text) else {
++            return;
++        };
++        if let Some(skill) = skill_commands(
++            self.skills.as_deref().unwrap_or_default(),
++            &self.service_tier_commands,
++        )
++        .into_iter()
++        .find(|skill| skill.name == name)
++        {
++            self.complete_slash_skill(&skill);
++        }
++    }
++}
++
++#[cfg(test)]
++#[path = "slash_skills_tests.rs"]
++mod tests;
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer/slash_skills_tests.rs b/codex-rs/tui/src/bottom_pane/chat_composer/slash_skills_tests.rs
+new file mode 100644
+index 0000000..2c4e80f
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/slash_skills_tests.rs
+@@ -0,0 +1,269 @@
++use super::*;
++use crate::app_event::AppEvent;
++use crate::bottom_pane::AppEventSender;
++use crate::bottom_pane::MentionBinding;
++use crate::bottom_pane::chat_composer::ChatComposerConfig;
++use crate::bottom_pane::chat_composer::InputResult;
++use crate::bottom_pane::chat_composer::QueuedInputAction;
++use crate::bottom_pane::chat_composer::popup_state::ActivePopup;
++use crate::bottom_pane::command_popup::CommandItem;
++use crate::test_support::PathBufExt;
++use crate::test_support::test_path_buf;
++use crossterm::event::KeyCode;
++use crossterm::event::KeyEvent;
++use crossterm::event::KeyModifiers;
++use pretty_assertions::assert_eq;
++use ratatui::buffer::Buffer;
++use ratatui::layout::Rect;
++use ratatui::widgets::WidgetRef;
++use tokio::sync::mpsc::unbounded_channel;
++
++fn skill(name: &str) -> SkillMetadata {
++    SkillMetadata {
++        name: name.to_string(),
++        description: "Run the example skill".to_string(),
++        short_description: None,
++        interface: None,
++        dependencies: None,
++        path: test_path_buf(&format!("/tmp/{name}/SKILL.md")).abs(),
++        scope: crate::test_support::skill_scope_user(),
++        enabled: true,
++        plugin_id: None,
++    }
++}
++
++fn composer(text: &str) -> ChatComposer {
++    let (tx, _rx) = unbounded_channel::<AppEvent>();
++    let mut composer = ChatComposer::new(
++        /*has_input_focus*/ true,
++        AppEventSender::new(tx),
++        /*enhanced_keys_supported*/ false,
++        "Ask Codex".to_string(),
++        /*disable_paste_burst*/ true,
++    );
++    composer.set_skill_mentions(Some(vec![skill("example")]));
++    composer.set_text_content(text.to_string(), Vec::new(), Vec::new());
++    composer.draft.textarea.set_cursor(text.len());
++    composer.sync_popups();
++    composer
++}
++
++fn press(composer: &mut ChatComposer, code: KeyCode) -> InputResult {
++    composer
++        .handle_key_event(KeyEvent::new(code, KeyModifiers::NONE))
++        .0
++}
++
++fn binding(name: &str) -> MentionBinding {
++    MentionBinding {
++        sigil: '$',
++        mention: name.rsplit(':').next().unwrap_or(name).to_string(),
++        path: skill(name).path.display().to_string(),
++    }
++}
++
++#[test]
++fn slash_skill_popup_snapshot() {
++    let composer = composer("/exa");
++    let ActivePopup::Command(popup) = &composer.popups.active else {
++        panic!("expected slash menu");
++    };
++    let area = Rect::new(
++        /*x*/ 0,
++        /*y*/ 0,
++        /*width*/ 80,
++        popup.calculate_required_height(80),
++    );
++    let mut buffer = Buffer::empty(area);
++    popup.render_ref(area, &mut buffer);
++    insta::assert_snapshot!("slash_skill_popup", format!("{buffer:?}"));
++}
++
++#[test]
++fn slash_skill_tab_binds_path_and_preserves_arguments() {
++    let mut composer = composer("/exa arguments\nsecond line");
++    composer.draft.textarea.set_cursor(4);
++    composer.sync_popups();
++    assert_eq!(press(&mut composer, KeyCode::Tab), InputResult::None);
++    assert_eq!(composer.current_text(), "$example arguments\nsecond line");
++    assert_eq!(
++        composer.snapshot_mention_bindings(),
++        vec![binding("example")]
++    );
++    assert!(!composer.popup_active());
++}
++
++#[test]
++fn slash_skill_enter_submits_native_binding() {
++    let mut composer = composer("/exa");
++    let InputResult::Submitted {
++        text,
++        text_elements,
++    } = press(&mut composer, KeyCode::Enter)
++    else {
++        panic!("expected native submission");
++    };
++    assert_eq!(text, "$example");
++    assert_eq!(text_elements.len(), 1);
++    assert_eq!(text_elements[0].placeholder(&text), Some("$example"));
++    assert_eq!(
++        composer.take_recent_submission_mention_bindings(),
++        vec![binding("example")]
++    );
++}
++
++#[test]
++fn slash_skill_exact_command_with_arguments_queues_as_plain_input() {
++    let mut composer = composer("/example first\nsecond");
++    composer.is_task_running = true;
++    let InputResult::Queued { text, action, .. } = press(&mut composer, KeyCode::Tab) else {
++        panic!("expected queued skill");
++    };
++    assert_eq!(
++        (text, action),
++        (
++            "$example first\nsecond".to_string(),
++            QueuedInputAction::Plain
++        )
++    );
++    assert_eq!(
++        composer.take_recent_submission_mention_bindings(),
++        vec![binding("example")]
++    );
++}
++
++#[test]
++fn slash_skill_exact_command_after_dismissing_menu_submits() {
++    let mut composer = composer("/example");
++    press(&mut composer, KeyCode::Esc);
++    assert!(
++        matches!(press(&mut composer, KeyCode::Enter), InputResult::Submitted { text, .. } if text == "$example")
++    );
++    assert_eq!(
++        composer.take_recent_submission_mention_bindings(),
++        vec![binding("example")]
++    );
++}
++
++#[test]
++fn slash_skill_catalog_refreshes_open_menu() {
++    let mut composer = composer("/");
++    composer.set_skill_mentions(Some(vec![skill("new-skill")]));
++    composer.set_text_content("/new-s".to_string(), Vec::new(), Vec::new());
++    composer.sync_popups();
++    press(&mut composer, KeyCode::Tab);
++    assert_eq!(composer.current_text(), "$new-skill ");
++    composer.set_skill_mentions(Some(Vec::new()));
++    composer.set_text_content("/new-skill".to_string(), Vec::new(), Vec::new());
++    assert_eq!(press(&mut composer, KeyCode::Enter), InputResult::None);
++    assert_eq!(composer.current_text(), "/new-skill");
++}
++
++#[test]
++fn slash_skill_collisions_preserve_builtins_and_all_unique_skills() {
++    let mut composer = composer("/model");
++    composer.set_skill_mentions(Some(vec![skill("model"), skill("skill:model")]));
++    let ActivePopup::Command(popup) = &composer.popups.active else {
++        panic!("expected menu")
++    };
++    assert_eq!(
++        popup.selected_item(),
++        Some(CommandItem::Builtin(SlashCommand::Model))
++    );
++    composer.set_text_content(
++        "/skill:skill:model arguments".to_string(),
++        Vec::new(),
++        Vec::new(),
++    );
++    assert!(
++        matches!(press(&mut composer, KeyCode::Enter), InputResult::Submitted { text, .. } if text == "$model arguments")
++    );
++    assert_eq!(
++        composer.take_recent_submission_mention_bindings(),
++        vec![binding("model")]
++    );
++}
++
++#[test]
++fn slash_skill_catalog_excludes_disabled_and_deduplicates_names() {
++    let mut disabled = skill("disabled");
++    disabled.enabled = false;
++    let commands = skill_commands(
++        &[disabled, skill("plugin:example"), skill("plugin:example")],
++        &[],
++    );
++    assert_eq!(
++        commands
++            .iter()
++            .map(|command| command.name.as_str())
++            .collect::<Vec<_>>(),
++        vec!["plugin:example"]
++    );
++    let mut composer = composer("/plugin:example args");
++    composer.set_skill_mentions(Some(vec![skill("plugin:example")]));
++    assert!(
++        matches!(press(&mut composer, KeyCode::Enter), InputResult::Submitted { text, .. } if text == "$example args")
++    );
++    assert_eq!(
++        composer.take_recent_submission_mention_bindings(),
++        vec![binding("plugin:example")]
++    );
++}
++
++#[test]
++fn slash_skill_plain_text_and_leading_space_remain_literal() {
++    for text in [" /example", "/example"] {
++        let mut composer = composer(text);
++        if text.starts_with('/') {
++            composer.config = ChatComposerConfig::plain_text();
++            composer.sync_popups();
++        }
++        assert!(
++            matches!(press(&mut composer, KeyCode::Enter), InputResult::Submitted { text, .. } if text == "/example")
++        );
++        assert_eq!(
++            composer.take_recent_submission_mention_bindings(),
++            Vec::new()
++        );
++    }
++}
++
++#[test]
++fn slash_skill_parent_owned_input_is_blocked() {
++    let mut composer = composer("/exa");
++    composer.blocks_direct_input = true;
++    assert_eq!(
++        press(&mut composer, KeyCode::Enter),
++        InputResult::ParentOwnedInputBlocked
++    );
++    assert_eq!(composer.current_text(), "/exa");
++}
++
++#[test]
++fn slash_skill_completion_preserves_other_mentions_and_images() {
++    let mut composer = composer("/exa $other");
++    composer.set_text_content_with_mention_bindings(
++        "/exa $other".to_string(),
++        Vec::new(),
++        Vec::new(),
++        vec![binding("other")],
++    );
++    let image_path = test_path_buf("/tmp/slash-skill-image.png");
++    composer.attach_image(image_path.clone());
++    // Image attachment inserts its placeholder; replace the draft while retaining the image.
++    composer.set_text_content_with_mention_bindings(
++        "/exa $other [Image #1]".to_string(),
++        Vec::new(),
++        vec![image_path.clone()],
++        vec![binding("other")],
++    );
++    composer.draft.textarea.set_cursor(4);
++    composer.sync_popups();
++    press(&mut composer, KeyCode::Tab);
++    assert_eq!(
++        composer.snapshot_mention_bindings(),
++        vec![binding("example"), binding("other")]
++    );
++    assert_eq!(composer.attachments.local_image_paths(), vec![image_path]);
++    assert_eq!(composer.current_text(), "$example $other [Image #1]");
++}
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__slash_skills__tests__slash_skill_popup.snap b/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__slash_skills__tests__slash_skill_popup.snap
+new file mode 100644
+index 0000000..4fc761c
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__slash_skills__tests__slash_skill_popup.snap
+@@ -0,0 +1,16 @@
++---
++source: tui/src/bottom_pane/chat_composer/slash_skills_tests.rs
++assertion_line: 78
++expression: "format!(\"{buffer:?}\")"
++---
++Buffer {
++    area: Rect { x: 0, y: 0, width: 80, height: 1 },
++    content: [
++        "  /example  Run the example skill  [Skill]                                      ",
++    ],
++    styles: [
++        x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 2, y: 0, fg: Cyan, bg: Reset, underline: Reset, modifier: BOLD,
++        x: 42, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++    ]
++}

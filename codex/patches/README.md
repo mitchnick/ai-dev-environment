@@ -293,3 +293,10 @@ To restore shortcuts, move the launcher back and run the health check.
 To select an older managed release, replace the `current` symlink with that
 release directory and run the health check before restarting any session.
 Do not modify release executables in place.
+
+## Skill slash menu (0.154.0 only)
+
+The separate [skill slash-menu patch](skills-slash-menu.md) adds `/skill-name`
+completion and invocation on Codex CLI 0.154.0. It applies alongside
+`effort-cycle-v0.154.0.patch`. It has not been ported to `model-effort.patch`,
+so managed builds and stock Codex do not include it.
