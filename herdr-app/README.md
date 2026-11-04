@@ -19,7 +19,7 @@ The app's home is `~/.config/herdr-app/`. Read `herdr-app --skill` and the
 | `home/settings.json` | Theme `monokai-pro-spectrum`, font MesloLGS Nerd Font Mono 14, sounds off, zoom 1, minimum contrast 1 |
 | `home/keys.json` | Every key binding: `global`, `terminal` and `layout:main-plus` sections |
 | `home/themes/monokai-pro-spectrum.json` | Ghostty's Monokai Pro Spectrum palette, with `accent #8b888f` and `border #363537` |
-| `home/layouts/main-plus.json` | A clone of the shipped `main` layout: `tabs-plus` tab bar plus Graph and Automations panels beside Files and Changes |
+| `home/layouts/main-plus.json` | A clone of the shipped `main` layout: `tabs-plus` tab bar plus Graph and Automations panels beside Files and Changes, `workspace-chrome-plus` for the sidebar's top bar and `agents-plus` for the sidebar's agent list |
 | `home/mods/tab-move-left`, `tab-move-right` | Move the focused tab one slot (no wrap) |
 | `home/mods/pane-next`, `pane-prev` | Cycle focus through the tab's panes in layout order (wraps) |
 | `home/mods/pane-mover`, `pane-mover-tabs` | Re-split, swap, or move the focused pane to another tab, space, new tab or new space |
@@ -27,8 +27,10 @@ The app's home is `~/.config/herdr-app/`. Read `herdr-app --skill` and the
 | `home/mods/arrange-wide`, `arrange-laptop` | Run `herdr-app-arrange wide`/`laptop` on the focused tab; a failure shows as a toast |
 | `home/mods/link-picker` | URLs the focused agent mentioned, from `herdr-app-links`; Enter opens, Ctrl+Y copies |
 | `home/mods/scrollback-search` | Searches the focused terminal's last 5000 lines (`hc read`); Enter copies the line |
-| `home/mods/tabs-plus` | A clone of the shipped `tabs` mod with Graph and Automations buttons, and a `tabs-plus.graph` key command |
+| `home/mods/tabs-plus` | A clone of the shipped `tabs` mod with Graph (before Changes) and Automations buttons, and `tabs-plus.graph` (Cmd+Shift+G) and `tabs-plus.changes` (Cmd+Shift+H) key commands. Its working spinner turns once every 20000ms instead of 900ms, as in `pane-plus` and `agents-plus` |
 | `home/mods/pane-plus` | A clone of the shipped `pane` header. It shows a name typed in Rename pane (the terminal's `pane.name` label) if there is one; else, while an agent runs, the pane's task name (`autoname.task`) in place of "Claude Code" or "Codex". Double-click the name to rename the pane. `main-plus` uses it for every pane header |
+| `home/mods/agents-plus` | A clone of the shipped `agents` sidebar list whose working spinner turns once every 20000ms instead of 900ms. Its sort menu opens `agents-plus`, not the shipped mod |
+| `home/mods/workspace-chrome-plus` | A clone of the shipped `workspace-chrome` mod that draws the horn (`herdr-horn.svg`) beside "Herdr" instead of Herdr's ram. `main-plus` uses it only for the sidebar's top bar. `herdr-horn.svg` is also the Dock icon: on each start (macOS only) the top bar runs `herdr-app-icon --if-missing` detached, logging to `$TMPDIR/herdr-app-icon.log`, so an update's new bundle gets the horn back. The master copy is kept in OneDrive under `Apps/Herdr` |
 | `home/mods/rename-pane` | The Rename pane dialog (Cmd+Shift+N, or double-click a header's name): sets or, when empty, removes the focused terminal's `pane.name` label in herdr-core, so the name survives app restarts |
 
 `bin/` installs into `~/.local/bin/`. Every script uses `$HOME`/`Path.home()`:
@@ -41,6 +43,7 @@ The app's home is `~/.config/herdr-app/`. Read `herdr-app --skill` and the
 | `claude-cycle-effort-hc` | Steps Claude Code's model picker one effort level, through `hc keys`/`hc read` and `herdr-app do pane.zoom`. Current pickers stop at Max, so from the top it steps back down to the lowest |
 | `herdr-app-grid` | `quad`/`dual`: a new tab in the calling terminal's space, split 2x2 or side by side. Exits 3 outside herdr-app so `ghostty-quad`/`ghostty-dual` can fall back to Ghostty |
 | `herdr-app-autoname` | Names panes and tabs from each chat's first message; see [Pane and tab names](#pane-and-tab-names). `install-hooks` adds its Claude Code and Codex hooks |
+| `herdr-app-icon` | Builds an `.icns` from the installed `workspace-chrome-plus/herdr-horn.svg` and sets it as Herdr.app's Finder custom icon (Dock, Finder, Cmd+Tab). Only Finder's custom-icon data is written; `Contents/` and the signature are untouched (`codesign --verify` passes, and only `--strict` objects to the Finder info). A Herdr update replaces the bundle and drops the icon; `workspace-chrome-plus` runs `--if-missing` on every app start, which exits at once while the bundle still has its `Icon\r` file. The Dock may show the ram until the app's next start. Needs `rsvg-convert` (`brew install librsvg`) and `swift` |
 
 `automations/automations.yaml` is a starter config for the automations CLI
 (`backend: hc`, no automations). It installs to
@@ -63,11 +66,17 @@ daemon` is running, which SETUP section 10 offers as an optional LaunchAgent.
 
 ### Derived from Herdr
 
-`tabs-plus`, `pane-plus` and `main-plus` are clones of the app's shipped `tabs`
-and `pane` mods and `main` layout at 0.1.12 (Apache-2.0, [herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)).
+`tabs-plus`, `pane-plus`, `workspace-chrome-plus`, `agents-plus` and `main-plus`
+are clones of the app's shipped `tabs`, `pane`, `workspace-chrome` and `agents` mods and `main`
+layout at 0.1.12 (Apache-2.0, [herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)).
 Their `cloned_from` field records that. Clones never update with the app.
 After a Herdr update, compare them with the new shipped versions and carry
 over fixes by hand.
+
+The horn in `workspace-chrome-plus/herdr-horn.svg` is the path from
+[`Tatendaz/herdr-launcher`](https://github.com/Tatendaz/herdr-launcher)'s
+`assets/icon.svg` at `d2d375ccecfe540df370e9b1fbb2c6812dc3c064`, unchanged
+except for an added white outline (MIT, see `LICENSE-herdr-horn` beside it).
 
 ## Not included
 

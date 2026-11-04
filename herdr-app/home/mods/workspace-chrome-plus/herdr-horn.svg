@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1800 1800">
+  <title>Herdr horn — original curves with white outline</title>
+  <desc>Horn path extracted unchanged from Tatendaz/herdr-launcher assets/icon.svg. White outline added; background transparent.</desc>
+  <g transform="translate(-2143.318361 3949.883552) scale(1 -1)">
+    <path d="M2794 3710 c-129 -33 -299 -135 -359 -214 -21 -28 -26 -42 -21 -63 9 -38 154 -178 199 -192 32 -11 41 -9 104 23 171 86 354 70 475 -43 150 -138 150 -379 0 -511 -107 -95 -278 -94 -386 2 l-46 40 -11 -29 c-16 -40 -14 -122 4 -164 60 -144 264 -222 452 -174 360 92 559 494 430 868 -36 103 -81 173 -175 267 -71 72 -100 93 -180 132 -52 26 -127 54 -167 62 -96 21 -230 20 -319 -4z" fill="#1a1a18" stroke="#ffffff" stroke-width="220" stroke-linejoin="round" paint-order="stroke fill"/>
+  </g>
+</svg>

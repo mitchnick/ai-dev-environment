@@ -304,7 +304,7 @@ Everything in this section is copied, never symlinked. [`herdr-app/README.md`](h
 
 ```sh
 for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid \
-    herdr-app-autoname; do
+    herdr-app-autoname herdr-app-icon; do
   put_file "$AI_ENV_REPO/herdr-app/bin/$name" "$HOME/.local/bin/$name" || break
   chmod +x "$HOME/.local/bin/$name"
 done
@@ -326,7 +326,7 @@ while IFS= read -r -d '' source; do
 done < <(git -C "$AI_ENV_REPO" ls-files -z -- herdr-app/home/)
 ```
 
-The loop installs the theme, the `main-plus` layout and fourteen mods. Only tracked files are copied, so a `gpui-kit.d.ts` or `jsconfig.json` that a check left in the checkout is skipped. When merging an existing `keys.json`, keep its sections and ask before replacing a key the owner already uses. The `layout:main-plus` section applies only while that layout shows.
+The loop installs the theme, the `main-plus` layout and sixteen mods. Only tracked files are copied, so a `gpui-kit.d.ts` or `jsconfig.json` that a check left in the checkout is skipped. When merging an existing `keys.json`, keep its sections and ask before replacing a key the owner already uses. The `layout:main-plus` section applies only while that layout shows.
 
 `main-plus` needs the `git-graph` and `automations` mods below; until they are installed, its Graph and Automations panels report errors.
 
@@ -494,7 +494,7 @@ Open Herdr from Applications, or run `herdr-app` from a shell. A Finder launch l
 herdr-app do layout.switch --name main-plus
 for mod in tab-move-left tab-move-right pane-next pane-prev pane-mover pane-mover-tabs \
     effort-cycle arrange-wide arrange-laptop link-picker scrollback-search tabs-plus pane-plus rename-pane \
-    git-graph automations; do
+    workspace-chrome-plus agents-plus git-graph automations; do
   herdr-app check "$HOME/.config/herdr-app/mods/$mod" || break
 done
 find "$HOME/.config/herdr-app" -maxdepth 1 -name '*.error' -print
@@ -503,6 +503,8 @@ jq -e '.theme == "monokai-pro-spectrum" and .font == "MesloLGS Nerd Font Mono"' 
 ```
 
 Every check should pass, `find` should print nothing, and both `jq` checks should print `true`. A broken file keeps its last good version running and writes the reason to `<name>.error`, so a working window does not prove a file loaded. If the welcome changed `settings.json`, merge the exported values back; the app applies them live. `ctrl-alt-shift-escape` is the app's escape hatch: it sets the shown layout and `keys.json` aside as `*.reset-<time>` and returns to the stock `main` layout. To recover, restore `keys.json` from the export and switch layouts again.
+
+Herdr.app gets the horn icon in the Dock and Finder on its next start: `main-plus`'s top bar runs `herdr-app-icon --if-missing`, which needs `brew install librsvg`. It puts the icon back after each app update too. Run `herdr-app-icon` to set it at once.
 
 Herdr sends anonymous daily usage counts by default; Settings → Privacy shows each report, or set `"telemetry": false` in `settings.json`. The exported settings leave it on, as the source machine does. Record the owner's choice.
 
@@ -754,7 +756,7 @@ jq -r '.[] | .[] | select(startswith("mod.open:")) | ltrimstr("mod.open:")' "$HO
     test -f "$HOME/.config/herdr-app/mods/$mod/main.js" || echo "keys.json opens a missing mod: $mod"
   done
 for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid \
-    herdr-app-autoname herdr-automations ghostty-quad ghostty-dual; do
+    herdr-app-autoname herdr-app-icon herdr-automations ghostty-quad ghostty-dual; do
   test -x "$HOME/.local/bin/$name" || echo "missing: $name"
 done
 ```
@@ -803,7 +805,7 @@ Use scratch spaces, tabs and harmless drafts. Record actual observations, not ju
 - [ ] Cmd+K in a Claude or Codex session that mentioned a harmless URL lists it; Enter opens, Ctrl+Y copies, Escape closes. In a plain shell it reads the screen instead.
 - [ ] Cmd+F searches the focused terminal's scrollback; Enter copies the line, Shift+Enter copies it with context, `/pattern/` is a regular expression.
 - [ ] `4x4` and `2x2` in a Herdr terminal open a new 2x2 or side-by-side tab in that space; in Ghostty they open a Ghostty window.
-- [ ] In `main-plus`, the Graph button and Cmd+Shift+G open git-graph for the focused repository; the Automations button opens the panel, which lists `automations.yaml` without an error. The scheduler state matches the section 10 choice.
+- [ ] In `main-plus`, the Graph button and Cmd+Shift+G open git-graph for the focused repository, and Cmd+Shift+H opens Changes; the Automations button opens the panel, which lists `automations.yaml` without an error. The scheduler state matches the section 10 choice.
 - [ ] A Claude Code session started after setup in a Herdr terminal appears in the sidebar's Agents list, and `hc get <its address> --json | jq .status` shows `"app": "claude-code"` with a state. If it is missing, check `env | grep CLAUDE_CODE_DISABLE_TERMINAL_TITLE` in that terminal (section 4).
 - [ ] In a scratch tab, the first message to Claude, then to Codex, then to Pi names the pane header and the tab within about ten seconds; a later message in the same chat changes nothing; after `/clear` (Codex and Pi: `/new`) the next first message renames a generated tab name but not one typed by hand. In a numbered checkout the tab reads `<checkout> - <name>`. `herdr-app-autoname status` shows each decision. Cmd+Shift+N (or double-clicking the header's name) renames a pane; that name stays over later task names until it is cleared.
 - [ ] During work, idle and a harmless input/approval prompt, the sidebar shows each agent's state. Sounds are off in the exported settings; record what a blocked agent shows.
@@ -826,9 +828,9 @@ Leave a private setup report containing:
 Rollback is per component, not a wholesale replacement of HOME:
 
 - Restore reviewed config files from `AI_ENV_BACKUP`; remove only newly created files listed in the report. Preserve credentials and unrelated changes made after setup. Remove/revert only the shell source lines added here.
-- Herdr app files: switch away first (`herdr-app do layout.switch --name main`), then restore `settings.json` and `keys.json` from `AI_ENV_BACKUP`. Remove only what section 6 installed: the fourteen exported mod folders, `mods/git-graph`, `mods/automations`, `layouts/main-plus.json` and the theme. Never delete `~/.config/herdr-app` wholesale; the rest is the app's own.
+- Herdr app files: switch away first (`herdr-app do layout.switch --name main`), then restore `settings.json` and `keys.json` from `AI_ENV_BACKUP`. Remove only what section 6 installed: the sixteen exported mod folders, `mods/git-graph`, `mods/automations`, `layouts/main-plus.json` and the theme. Never delete `~/.config/herdr-app` wholesale; the rest is the app's own.
 - Run `herdr-app-autoname remove-hooks` and delete `~/.pi/agent/extensions/herdr-app-autoname.ts` before removing the helpers. Tab names it wrote stay; its state is in `~/.local/state/herdr-app-autoname/`.
-- Remove only the six Herdr helpers from `~/.local/bin`, and restore `ghostty-quad`/`ghostty-dual` from the backup if they were replaced.
+- Remove only the seven Herdr helpers from `~/.local/bin`, and restore `ghostty-quad`/`ghostty-dual` from the backup if they were replaced.
 - Automations: `herdr-automations service uninstall` if section 10 installed it, then remove `~/.local/bin/herdr-automations`. Keep `automations.yaml` and its run history unless the owner asks otherwise.
 - Removing the Herdr app itself: herdr-core keeps terminals running after the window closes. Check `hc ls` and end those terminals deliberately before removing `~/.local/bin/herdr-core` and `hc`. Then remove the app bundle and the `~/.local/bin/herdr-app` link.
 - Restore Codex's saved native executable and the stock-adapted router together; preserve its npm launcher/helpers and restart Codex sessions normally.
@@ -836,7 +838,7 @@ Rollback is per component, not a wholesale replacement of HOME:
 - Disable archive automation through the environment flags before removing helpers. Preserve existing transcripts and archives; setup rollback is not permission to delete them.
 - Legacy Herdr 0.9.0 rollback is in [Appendix L7](#l7-legacy-rollback).
 
-For future upgrades, review changes before copying. Pi's `pi update` wrapper runs cursor regressions before/after; rerun compatibility smoke checks after extension updates. Claude updates may need a newly compatible footer patch. Codex's launcher automatically rebuilds and tests its customizations when npm changes; patch incompatibilities are reported explicitly. The Herdr app replaces its shipped mods and layouts on every update, but `tabs-plus`, `pane-plus` and `main-plus` are clones that never update. Compare them with the new shipped `tabs`, `pane` and `main` (their `cloned_from.version` says which release they came from) and carry fixes over by hand. `herdr-app-arrange` and `herdr-app-autoname` edit herdr-core's undocumented layout document; after a core update, a format change makes them refuse without writing. To move git-graph or automations to a newer upstream release, review it and repeat section 6's copy with the new pin. Repeat the acceptance checks affected by each upgrade.
+For future upgrades, review changes before copying. Pi's `pi update` wrapper runs cursor regressions before/after; rerun compatibility smoke checks after extension updates. Claude updates may need a newly compatible footer patch. Codex's launcher automatically rebuilds and tests its customizations when npm changes; patch incompatibilities are reported explicitly. The Herdr app replaces its shipped mods and layouts on every update, but `tabs-plus`, `pane-plus`, `workspace-chrome-plus`, `agents-plus` and `main-plus` are clones that never update. Compare them with the new shipped `tabs`, `pane`, `workspace-chrome`, `agents` and `main` (their `cloned_from.version` says which release they came from) and carry fixes over by hand. `herdr-app-arrange` and `herdr-app-autoname` edit herdr-core's undocumented layout document; after a core update, a format change makes them refuse without writing. To move git-graph or automations to a newer upstream release, review it and repeat section 6's copy with the new pin. Repeat the acceptance checks affected by each upgrade.
 
 ### Coverage map for future maintainers
 

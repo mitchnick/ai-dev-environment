@@ -1,0 +1,45 @@
+#!/bin/bash
+# herdr-app-icon [--if-missing] [Herdr.app]: set the horn as Herdr.app's Finder icon (Dock,
+# Finder, Cmd+Tab). The horn is workspace-chrome-plus's herdr-horn.svg, which also draws the
+# sidebar logo. Default app: /Applications/Herdr.app, else ~/Applications/Herdr.app.
+# A Herdr update replaces the bundle and drops the custom icon; workspace-chrome-plus runs
+# this with --if-missing on every app start, which does nothing while the icon is there.
+# It writes only Finder's custom-icon data; Contents/ and the signature are untouched.
+# Needs rsvg-convert (brew install librsvg); iconutil and swift come with macOS and the
+# Command Line Tools.
+set -euo pipefail
+
+svg="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/workspace-chrome-plus/herdr-horn.svg"
+if_missing=false
+if [ "${1:-}" = "--if-missing" ]; then if_missing=true; shift; fi
+app="${1:-}"
+if [ -z "$app" ]; then
+	for candidate in /Applications/Herdr.app "$HOME/Applications/Herdr.app"; do
+		[ -d "$candidate" ] && { app="$candidate"; break; }
+	done
+fi
+[ -f "$svg" ] || { echo "herdr-app-icon: $svg is missing; install the workspace-chrome-plus mod" >&2; exit 1; }
+[ -d "$app" ] || { echo "herdr-app-icon: Herdr.app not found; pass its path" >&2; exit 1; }
+# Finder keeps a folder's custom icon in an "Icon\r" file inside it.
+if $if_missing && [ -e "$app/Icon"$'\r' ]; then exit 0; fi
+echo "$(date '+%F %T') herdr-app-icon: setting the horn on $app"
+command -v rsvg-convert >/dev/null 2>&1 || { echo "herdr-app-icon: needs rsvg-convert (brew install librsvg)" >&2; exit 1; }
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+iconset="$work/herdr-horn.iconset"
+mkdir "$iconset"
+for size in 16 32 128 256 512; do
+	rsvg-convert -w "$size" -h "$size" -o "$iconset/icon_${size}x${size}.png" "$svg"
+	rsvg-convert -w "$((size * 2))" -h "$((size * 2))" -o "$iconset/icon_${size}x${size}@2x.png" "$svg"
+done
+iconutil -c icns "$iconset" -o "$work/herdr-horn.icns"
+
+cat > "$work/set-icon.swift" <<'SWIFT'
+import AppKit
+let args = CommandLine.arguments
+guard let icon = NSImage(contentsOfFile: args[1]) else { fatalError("cannot load \(args[1])") }
+guard NSWorkspace.shared.setIcon(icon, forFile: args[2], options: []) else { fatalError("cannot set the icon on \(args[2])") }
+print("Set the horn icon on \(args[2])")
+SWIFT
+swift "$work/set-icon.swift" "$work/herdr-horn.icns" "$app"
