@@ -18,8 +18,8 @@ The app's home is `~/.config/herdr-app/`. Read `herdr-app --skill` and the
 |---|---|
 | `home/settings.json` | Theme `monokai-pro-spectrum`, font MesloLGS Nerd Font Mono 14, sounds off, zoom 1, minimum contrast 1 |
 | `home/keys.json` | Every key binding: `global`, `terminal` and `layout:main-plus` sections |
-| `home/themes/monokai-pro-spectrum.json` | Ghostty's Monokai Pro Spectrum palette, with `accent #8b888f` and `border #363537` |
-| `home/layouts/main-plus.json` | A clone of the shipped `main` layout: `tabs-plus` tab bar plus Graph and Automations panels beside Files and Changes, `workspace-chrome-plus` for the sidebar's top bar and `agents-plus` for the sidebar's agent list |
+| `home/themes/monokai-pro-spectrum.json` | Ghostty's Monokai Pro Spectrum palette, with `accent #8b888f`, `border #363537` and `working #69676c` (a gray agent spinner in place of yellow) |
+| `home/layouts/main-plus.json` | A clone of the shipped `main` layout: `tabs-plus` tab bar plus Graph and Automations panels beside Files and Changes, `workspace-chrome-plus` for the sidebar's top bar, `agents-plus` for the sidebar's agent list and `usage` for the sidebar's Usage block |
 | `home/mods/tab-move-left`, `tab-move-right` | Move the focused tab one slot (no wrap) |
 | `home/mods/pane-next`, `pane-prev` | Cycle focus through the tab's panes in layout order (wraps) |
 | `home/mods/pane-mover`, `pane-mover-tabs` | Re-split, swap, or move the focused pane to another tab, space, new tab or new space |
@@ -31,6 +31,7 @@ The app's home is `~/.config/herdr-app/`. Read `herdr-app --skill` and the
 | `home/mods/pane-plus` | A clone of the shipped `pane` header. It shows a name typed in Rename pane (the terminal's `pane.name` label) if there is one; else, while an agent runs, the pane's task name (`autoname.task`) in place of "Claude Code" or "Codex". Double-click the name to rename the pane. `main-plus` uses it for every pane header |
 | `home/mods/agents-plus` | A clone of the shipped `agents` sidebar list whose working spinner turns once every 20000ms instead of 900ms. Its sort menu opens `agents-plus`, not the shipped mod |
 | `home/mods/workspace-chrome-plus` | A clone of the shipped `workspace-chrome` mod that draws the horn (`herdr-horn.svg`) beside "Herdr" instead of Herdr's ram. `main-plus` uses it only for the sidebar's top bar. `herdr-horn.svg` is also the Dock icon: on each start (macOS only) the top bar runs `herdr-app-icon --if-missing` detached, logging to `$TMPDIR/herdr-app-icon.log`, so an update's new bundle gets the horn back. The master copy is kept in OneDrive under `Apps/Herdr` |
+| `home/mods/usage` | The sidebar's Usage block: each Claude subscription and OpenAI, from the readings `herdr-usage` keeps on disk; see [Usage block](#usage-block). Its `place` is `none`, so it shows only where a layout puts it |
 | `home/mods/rename-pane` | The Rename pane dialog (Cmd+Shift+N, or double-click a header's name): sets or, when empty, removes the focused terminal's `pane.name` label in herdr-core, so the name survives app restarts |
 
 `bin/` installs into `~/.local/bin/`. Every script uses `$HOME`/`Path.home()`:
@@ -94,10 +95,9 @@ except for an added white outline (MIT, see `LICENSE-herdr-horn` beside it).
   and layouts on every start. One that differs from the shipped files (a
   missing subfolder counts) is moved to `<mod>-edited` and the stock one
   reinstalled. Clone with `mod.clone`/`layout.clone` instead.
-- **The sidebar usage widget** (`mods/usage`) is still being built, and its
-  account names are personal. The exported `main-plus` leaves out its
-  `usage` sidebar block; that is the only difference from the source machine's
-  layout.
+- **Subscription names and machine names.** This repo is public, so
+  `~/.claude/usage-accounts/.config.json` stays on the machine, and neither the
+  mod nor `herdr-usage` may hard-code what it holds. See [Usage block](#usage-block).
 - **The automations LaunchAgent.** `herdr-automations service install`
   regenerates it with the current shell's `PATH`; it is not a portable file.
 
@@ -152,6 +152,53 @@ HERDR_AUTONAME_OFF=1                          # in an agent's environment: skip 
 `pi`. `install-hooks` gives Codex an absolute path, since Codex runs hooks
 from its daemon rather than the pane's shell.
 
+## Usage block
+
+The Claude subscription signed in here shows its 5h, 7d and Fable windows. Every
+other subscription, and OpenAI, gets one row with its 7d window and reset. Hover
+a row for every window, its reset and the reading's age. Numbers turn yellow at
+50% and red at 80%. A reading over ten minutes old is stale: its label and any
+number under 50% fade. Past a window's reset, the row shows 0%.
+
+`mods/usage` only reads files, so it never touches a credential.
+[`pi/helpers/herdr-usage`](../pi/helpers/herdr-usage), run every two minutes by a
+LaunchAgent ([SETUP section 10](../SETUP.md#account-usage)), does the fetching:
+
+| File | What |
+|---|---|
+| `~/.claude/usage-accounts/<email>.json` | The last reading for each Claude subscription |
+| `~/.claude/usage-accounts/.active` | The account `claude` runs as on this machine |
+| `~/.pi/agent/openai-usage-cache.json` | The last OpenAI reading, through Pi's login |
+
+`/login` swaps one subscription for another here, and each keeps its last
+reading, so a subscription signed in nowhere goes stale rather than disappearing.
+
+Short names and other machines come from a private file. Both keys, and the file
+itself, are optional. **Keep it on the machine: its contents never belong in this
+repo.**
+
+```json
+{
+  "names": {
+    "work@example.com": "work",
+    "me@example.com": "personal"
+  },
+  "hosts": ["my-server"]
+}
+```
+
+That is `~/.claude/usage-accounts/.config.json`.
+
+- `names`: each email's short name, in the order shown after the signed-in
+  subscription. An account it doesn't list still shows once it has a reading,
+  named from its email: the domain, or the part before `@` at a public mail
+  provider.
+- `hosts`: ssh names of machines signed in to another subscription. The usage
+  call runs there with that machine's token, so the token never leaves it. Each
+  needs key-based ssh, `jq`, `curl` and Claude's login in
+  `~/.claude/.credentials.json`. `CLAUDE_USAGE_HOSTS` overrides the list,
+  separated by spaces.
+
 ## How the key-driven mods work
 
 A key can only run an app command, not a shell command. So each action mod
@@ -191,9 +238,9 @@ for m in herdr-app/home/mods/*/; do
   done
 done
 for s in herdr-app/bin/*; do cp -p "$HOME/.local/bin/$(basename "$s")" herdr-app/bin/; done
-git diff --stat -- herdr-app
+cp -p "$HOME/.local/bin/herdr-usage" pi/helpers/
+git diff --stat -- herdr-app pi/helpers/herdr-usage
 ```
 
-Add new mods by name. Then remove the `usage` block from `main-plus.json` again
-unless the widget has been exported. Search the diff for home paths, account
-names and machine names before committing.
+Add new mods by name. Search the diff for home paths, account names and machine
+names before committing.

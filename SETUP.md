@@ -326,9 +326,9 @@ while IFS= read -r -d '' source; do
 done < <(git -C "$AI_ENV_REPO" ls-files -z -- herdr-app/home/)
 ```
 
-The loop installs the theme, the `main-plus` layout and sixteen mods. Only tracked files are copied, so a `gpui-kit.d.ts` or `jsconfig.json` that a check left in the checkout is skipped. When merging an existing `keys.json`, keep its sections and ask before replacing a key the owner already uses. The `layout:main-plus` section applies only while that layout shows.
+The loop installs the theme, the `main-plus` layout and seventeen mods. Only tracked files are copied, so a `gpui-kit.d.ts` or `jsconfig.json` that a check left in the checkout is skipped. When merging an existing `keys.json`, keep its sections and ask before replacing a key the owner already uses. The `layout:main-plus` section applies only while that layout shows.
 
-`main-plus` needs the `git-graph` and `automations` mods below; until they are installed, its Graph and Automations panels report errors.
+`main-plus` needs the `git-graph` and `automations` mods below; until they are installed, its Graph and Automations panels report errors. Its Usage block says "No usage readings yet" until [section 10](#account-usage) starts `herdr-usage`; that is not an error.
 
 ### Pane and tab names
 
@@ -628,7 +628,61 @@ It writes `~/Library/LaunchAgents/dev.dnzzl.herdr-automations.plist` and starts 
 
 ### Account usage
 
-The exported usage publisher (`pi/helpers/herdr-usage` with `herdr/helpers/herdr-codex-usage`) feeds the **legacy** Herdr sidebar; [Appendix L5](#l5-account-usage-in-the-sidebar-optional) covers it. A Herdr app usage widget is being built on the source machine and is not exported yet. Record account usage in the Herdr app as unavailable.
+The `main-plus` sidebar's Usage block (`mods/usage`) shows each Claude subscription and OpenAI. It only reads files. `herdr-usage`, installed in section 7, writes them using the Claude and Pi logins from section 8, so never run it with shell tracing. Start it as a login job once those logins work. Run this from the final shell environment: a LaunchAgent inherits nothing from the terminal, so the job records `PI_NODE_BIN` and `PI_CLI_PATH` for the Pi wrapper.
+
+```sh
+label=io.mitchnick.herdr-usage
+plist="$HOME/Library/LaunchAgents/$label.plist"
+if [ -e "$plist" ]; then
+  echo "Already exists; review it before changing anything: $plist"
+else
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>while true; do "$HOME/.local/bin/herdr-usage"; sleep 120; done</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PI_BIN</key>
+    <string>$HOME/.local/bin/pi</string>
+    <key>PI_NODE_BIN</key>
+    <string>$PI_NODE_BIN</string>
+    <key>PI_CLI_PATH</key>
+    <string>$PI_CLI_PATH</string>
+  </dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/herdr-usage.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/herdr-usage.err.log</string>
+</dict>
+</plist>
+EOF
+  plutil -lint "$plist" && launchctl bootstrap "gui/$(id -u)" "$plist"
+fi
+```
+
+The plist holds absolute paths, so never copy it from another machine. After moving Node or Pi, remove the job (section 12) and run this again. It is a looping `KeepAlive` job rather than `StartInterval` because macOS can silently stop re-arming a `StartInterval` while `launchctl` still reports the job as healthy; `launchctl print "gui/$(id -u)/io.mitchnick.herdr-usage"` showing a `pid` is a real health check. Readings land in `~/.claude/usage-accounts/` and `~/.pi/agent/openai-usage-cache.json` within a few seconds, and the block picks them up within 30. Exit status alone proves nothing: with no login, the script exits 0 and writes nothing. Check freshness and the rendered block without printing credentials or raw account payloads. The usage endpoints are internal and can change; keep the feature outstanding if real responses no longer match the helper.
+
+A machine with several subscriptions can add the optional private `~/.claude/usage-accounts/.config.json` for short names and for readings from other machines; [`herdr-app/README.md`](herdr-app/README.md#usage-block) has its format. It holds personal emails and machine names, so get its values from the owner and never commit it. Without it, every account with a reading still shows, named from its email.
+
+A legacy Herdr 0.9.0 sidebar reads the same publisher; [Appendix L5](#l5-account-usage-in-the-sidebar-optional) covers it.
 
 ### Session archiving
 
@@ -714,7 +768,7 @@ Jev instruction section, restoring any files backed up during installation.
 | GitKraken marketplace and hooks | Obtain separately or disable the unresolved plugin entry |
 | Telemetry collector on port 1738 | Restore separately or leave the exported telemetry settings removed |
 | Codex Cmd+E picker patch | Included in the managed upgrade-tested shortcut patch; stock uses `/model` |
-| Usage LaunchAgent, account state | Create locally only if enabling usage; never publish the generated state |
+| Usage LaunchAgent, account state, `usage-accounts/.config.json` | Create locally (section 10); never publish the generated state or the personal names and hosts in `.config.json` |
 | Image-provider and compatibility-search keys | Configure privately for selected features, or mark those features inactive |
 | Existing sessions, history, caches, trust decisions, plugin registries | Not restored by this repo; generate new state through the tools |
 
@@ -756,7 +810,7 @@ jq -r '.[] | .[] | select(startswith("mod.open:")) | ltrimstr("mod.open:")' "$HO
     test -f "$HOME/.config/herdr-app/mods/$mod/main.js" || echo "keys.json opens a missing mod: $mod"
   done
 for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid \
-    herdr-app-autoname herdr-app-icon herdr-automations ghostty-quad ghostty-dual; do
+    herdr-app-autoname herdr-app-icon herdr-usage herdr-automations ghostty-quad ghostty-dual; do
   test -x "$HOME/.local/bin/$name" || echo "missing: $name"
 done
 ```
@@ -772,6 +826,7 @@ for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycl
 done
 "$HOME/.local/bin/herdr-app-autoname" try --cwd "$HOME" "fix the google sign in redirect"
 bash -n "$HOME/.local/bin/herdr-app-grid"
+bash -n "$HOME/.local/bin/herdr-usage"
 bash -n "$HOME/.local/bin/ghostty-quad"
 bash -n "$HOME/.local/bin/ghostty-dual"
 (unset HC_TERMINAL_ID; "$HOME/.local/bin/herdr-app-grid" quad "$HOME"; test $? -eq 3) && echo 'grid falls back outside herdr-app'
@@ -808,6 +863,7 @@ Use scratch spaces, tabs and harmless drafts. Record actual observations, not ju
 - [ ] In `main-plus`, the Graph button and Cmd+Shift+G open git-graph for the focused repository, and Cmd+Shift+H opens Changes; the Automations button opens the panel, which lists `automations.yaml` without an error. The scheduler state matches the section 10 choice.
 - [ ] A Claude Code session started after setup in a Herdr terminal appears in the sidebar's Agents list, and `hc get <its address> --json | jq .status` shows `"app": "claude-code"` with a state. If it is missing, check `env | grep CLAUDE_CODE_DISABLE_TERMINAL_TITLE` in that terminal (section 4).
 - [ ] In a scratch tab, the first message to Claude, then to Codex, then to Pi names the pane header and the tab within about ten seconds; a later message in the same chat changes nothing; after `/clear` (Codex and Pi: `/new`) the next first message renames a generated tab name but not one typed by hand. In a numbered checkout the tab reads `<checkout> - <name>`. `herdr-app-autoname status` shows each decision. Cmd+Shift+N (or double-clicking the header's name) renames a pane; that name stays over later task names until it is cleared.
+- [ ] The sidebar's Usage block lists the signed-in Claude subscription with its 5h, 7d and Fable windows, then any other subscription and OpenAI, and a hover shows a reading only minutes old. If section 10's job was left off, record that; the block then says "No usage readings yet".
 - [ ] During work, idle and a harmless input/approval prompt, the sidebar shows each agent's state. Sounds are off in the exported settings; record what a blocked agent shows.
 - [ ] Chosen optional features have their own observed result: footer patch, scheduled automations, local archive destination, skills, and restored MCPs. Inactive options have explicit reasons.
 - [ ] Quitting and reopening the app keeps every terminal running and returns to `main-plus` with the same keys. After opening a new terminal, PATH, wrapper, themes and instructions still work.
@@ -828,10 +884,11 @@ Leave a private setup report containing:
 Rollback is per component, not a wholesale replacement of HOME:
 
 - Restore reviewed config files from `AI_ENV_BACKUP`; remove only newly created files listed in the report. Preserve credentials and unrelated changes made after setup. Remove/revert only the shell source lines added here.
-- Herdr app files: switch away first (`herdr-app do layout.switch --name main`), then restore `settings.json` and `keys.json` from `AI_ENV_BACKUP`. Remove only what section 6 installed: the sixteen exported mod folders, `mods/git-graph`, `mods/automations`, `layouts/main-plus.json` and the theme. Never delete `~/.config/herdr-app` wholesale; the rest is the app's own.
+- Herdr app files: switch away first (`herdr-app do layout.switch --name main`), then restore `settings.json` and `keys.json` from `AI_ENV_BACKUP`. Remove only what section 6 installed: the seventeen exported mod folders, `mods/git-graph`, `mods/automations`, `layouts/main-plus.json` and the theme. Never delete `~/.config/herdr-app` wholesale; the rest is the app's own.
 - Run `herdr-app-autoname remove-hooks` and delete `~/.pi/agent/extensions/herdr-app-autoname.ts` before removing the helpers. Tab names it wrote stay; its state is in `~/.local/state/herdr-app-autoname/`.
 - Remove only the seven Herdr helpers from `~/.local/bin`, and restore `ghostty-quad`/`ghostty-dual` from the backup if they were replaced.
 - Automations: `herdr-automations service uninstall` if section 10 installed it, then remove `~/.local/bin/herdr-automations`. Keep `automations.yaml` and its run history unless the owner asks otherwise.
+- Usage job: `launchctl bootout "gui/$(id -u)/io.mitchnick.herdr-usage"`, then remove its plist. Keep `~/.claude/usage-accounts/` unless the owner asks otherwise; it holds their private `.config.json`.
 - Removing the Herdr app itself: herdr-core keeps terminals running after the window closes. Check `hc ls` and end those terminals deliberately before removing `~/.local/bin/herdr-core` and `hc`. Then remove the app bundle and the `~/.local/bin/herdr-app` link.
 - Restore Codex's saved native executable and the stock-adapted router together; preserve its npm launcher/helpers and restart Codex sessions normally.
 - Run `claude-footer-oneline.py --revert` for the footer customization.
@@ -866,7 +923,7 @@ Use this table when adding files. Every new runtime file, dependency, or config 
 | `pi/config/` | agent settings/keys/theme/instruction link; runtime UI at `~/.pi/settings.json`; shell wrapper | 4, 7 |
 | `pi/extensions/custom/` | contents copied directly under `~/.pi/agent/extensions/` | 7 |
 | `pi/extensions/package*.json` | extension root manifests; also install nested claude-compat dependencies | 7 |
-| `pi/helpers/` | `~/.local/bin/`; archive activation separate; `herdr-usage` feeds the legacy sidebar | 7, 10, L5 |
+| `pi/helpers/` | `~/.local/bin/`; archive activation separate; `herdr-usage` fetches for the app's Usage block and feeds the legacy sidebar | 7, 10, L5 |
 | Both `EXTERNAL-EXTENSIONS.md` inventories | install/reconcile package and marketplace state through each manager | 8 |
 | `README.md`, `SHORTCUTS.md`, `LICENSE`, development/test/demo metadata | reference material in permanent checkout | 11, 12 |
 
@@ -1059,7 +1116,7 @@ Run `herdr config check`. Use the sidebar **menu → detach**, then launch `~/.l
 
 ### L5. Account usage in the sidebar (optional)
 
-The actual export **does include** `pi/helpers/herdr-usage`, despite older Herdr prose saying the publisher is excluded. It does **not** include the LaunchAgent that schedules it. That publisher reads Claude login credentials and Pi's OpenAI login when refreshing usage; never run it with shell tracing. Its default Pi search only checks nvm directories, so supply `PI_BIN` explicitly for the wrapper installed here.
+The actual export **does include** `pi/helpers/herdr-usage`, despite older Herdr prose saying the publisher is excluded. [Section 10](#account-usage) schedules it for the Herdr app; a legacy machine uses the private runner below instead, because publishing also needs the paths and collector it sets. That publisher reads Claude login credentials and Pi's OpenAI login when refreshing usage; never run it with shell tracing. Its default Pi search only checks nvm directories, so supply `PI_BIN` explicitly for the wrapper installed here.
 
 To enable usage, confirm logins and Herdr's socket first, then set absolute executable paths in the private shell environment or runner:
 

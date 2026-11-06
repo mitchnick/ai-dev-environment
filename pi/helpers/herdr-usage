@@ -1,5 +1,6 @@
 #!/bin/bash
-# Publish account-wide Claude and OpenAI subscription usage to one Herdr sidebar block.
+# Fetch account-wide Claude and OpenAI subscription usage for the Herdr app's usage
+# mod, and publish it to the legacy Herdr sidebar when that is running.
 # Run by ~/Library/LaunchAgents/io.mitchnick.herdr-usage.plist every two minutes.
 
 set -u
@@ -29,9 +30,9 @@ padl() { printf '%s%s' "$(repeat $(( $2 - ${#1} )))" "$1"; }
 
 ALL_TOKENS="ul5 u5lo u5mid u5hi uclk ul7 u7lo u7mid u7hi ucal ulfb ufblo ufbmid ufbhi ulcx ucxlo ucxmid ucxhi uocal"
 
+# The readings are fetched even when the terminal Herdr isn't running: the
+# Herdr app's usage mod reads them from disk. Only publishing needs the socket.
 command -v jq >/dev/null 2>&1 || exit 0
-[ -x "$HERDR" ] || exit 0
-[ -S "$SOCKET" ] || exit 0
 
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
 cache_age() {
@@ -80,8 +81,20 @@ to_hhmm() {
   printf '%s' "${out#0}" | tr 'APM' 'apm'
 }
 
-# Claude OAuth usage.
+# Claude OAuth usage. /login swaps one subscription for another, so each
+# reading is also kept per account, under the signed-in email, for the usage
+# mod to show every subscription's last reading. The email is read before
+# and after the token; a /login between the two skips the per-account copy.
+CLAUDE_ACCOUNTS=${CLAUDE_USAGE_ACCOUNTS:-$HOME/.claude/usage-accounts}
+claude_email() { jq -r '.oauthAccount.emailAddress // empty' "$HOME/.claude.json" 2>/dev/null; }
+# Who `claude` runs as on this Mac right now, for the usage mod to mark.
+active_email=$(claude_email)
+if [ -n "$active_email" ] && mkdir -p "$CLAUDE_ACCOUNTS" \
+  && [ "$(cat "$CLAUDE_ACCOUNTS/.active" 2>/dev/null)" != "$active_email" ]; then
+  printf '%s\n' "$active_email" > "$CLAUDE_ACCOUNTS/.active.tmp.$$" && mv "$CLAUDE_ACCOUNTS/.active.tmp.$$" "$CLAUDE_ACCOUNTS/.active"
+fi
 if [ "$(cache_age "$CLAUDE_CACHE")" -ge "$FETCH_TTL" ]; then
+  email_before=$(claude_email)
   claude_token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
     | jq -r '.claudeAiOauth.accessToken // empty')
   [ -z "$claude_token" ] && claude_token=$(jq -r '.claudeAiOauth.accessToken // empty' "$HOME/.claude/.credentials.json" 2>/dev/null)
@@ -92,9 +105,44 @@ if [ "$(cache_age "$CLAUDE_CACHE")" -ge "$FETCH_TTL" ]; then
       -H "anthropic-beta: oauth-2025-04-20")
     if printf '%s' "$body" | jq -e '.limits' >/dev/null 2>&1; then
       printf '%s' "$body" > "$CLAUDE_CACHE.tmp.$$" && mv "$CLAUDE_CACHE.tmp.$$" "$CLAUDE_CACHE"
+      email_after=$(claude_email)
+      if [ -n "$email_before" ] && [ "$email_before" = "$email_after" ] && mkdir -p "$CLAUDE_ACCOUNTS"; then
+        printf '%s' "$body" | jq --arg email "$email_after" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '. + {account: {email: $email, fetched_at: $at}}' > "$CLAUDE_ACCOUNTS/$email_after.json.tmp.$$" \
+          && mv "$CLAUDE_ACCOUNTS/$email_after.json.tmp.$$" "$CLAUDE_ACCOUNTS/$email_after.json"
+      fi
     fi
   fi
 fi
+
+# Subscriptions signed in on other machines: `hosts` in the accounts folder's
+# .config.json lists their ssh names (CLAUDE_USAGE_HOSTS overrides it, separated
+# by spaces). The usage call runs there, with that machine's own token, so the
+# token never leaves it; only the reading comes back, kept beside this Mac's
+# under the email that machine is signed in as.
+for host in ${CLAUDE_USAGE_HOSTS:-$(jq -r '.hosts[]?' "$CLAUDE_ACCOUNTS/.config.json" 2>/dev/null)}; do
+  marker="$CLAUDE_ACCOUNTS/.$host.fetched"
+  [ "$(cache_age "$marker")" -ge "$FETCH_TTL" ] || continue
+  mkdir -p "$CLAUDE_ACCOUNTS" && touch "$marker"
+  # ConnectTimeout only covers connecting. Without keepalives, a connection that
+  # dies mid-call hangs here forever and freezes every reading behind it.
+  remote=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 "$host" 'bash -s' 2>/dev/null <<'REMOTE'
+email=$(jq -r '.oauthAccount.emailAddress // empty' ~/.claude.json 2>/dev/null)
+token=$(jq -r '.claudeAiOauth.accessToken // empty' ~/.claude/.credentials.json 2>/dev/null)
+[ -n "$email" ] && [ -n "$token" ] || exit 1
+curl -s --max-time 10 https://api.anthropic.com/api/oauth/usage \
+  -H "Authorization: Bearer $token" \
+  -H "Content-Type: application/json" \
+  -H "anthropic-beta: oauth-2025-04-20" \
+  | jq -c --arg email "$email" 'select(.limits) | . + {account: {email: $email}}'
+REMOTE
+)
+  email=$(printf '%s' "$remote" | jq -r '.account.email // empty' 2>/dev/null)
+  case "$email" in ''|*/*) continue ;; esac
+  printf '%s' "$remote" | jq --arg host "$host" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '.account += {host: $host, fetched_at: $at}' > "$CLAUDE_ACCOUNTS/$email.json.tmp.$$" \
+    && mv "$CLAUDE_ACCOUNTS/$email.json.tmp.$$" "$CLAUDE_ACCOUNTS/$email.json"
+done
 
 # OpenAI Codex/ChatGPT usage. Pi's auth command refreshes OAuth before printing
 # the bearer token. The token stays in this process and never reaches logs.
@@ -181,6 +229,8 @@ for token in $ALL_TOKENS; do
   case " $fill_seen " in *" $token "*) ;; *) set_args+=(--clear-token "$token") ;; esac
 done
 
+[ -x "$HERDR" ] || exit 0
+[ -S "$SOCKET" ] || exit 0
 ws=$("$HERDR" workspace list 2>/dev/null) || exit 0
 target=$(printf '%s' "$ws" | jq -r --arg pin "$PIN" '
   (.result.workspaces | sort_by(.number)) as $w
