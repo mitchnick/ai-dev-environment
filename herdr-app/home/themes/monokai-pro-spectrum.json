@@ -9,6 +9,7 @@
   ],
   "colors": {
     "accent": "#8b888f",
-    "border": "#363537"
+    "border": "#363537",
+    "working": "#69676c"
   }
 }

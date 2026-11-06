@@ -21,6 +21,7 @@ See [Shortcuts](SHORTCUTS.md) for a copyable cheat sheet of Herdr, Ghostty, and 
 - Hooks
 - MCP server configuration
 - Authentication, tokens, passwords, caches, history, and logs
+- Personal account and machine names, such as the Herdr app's [private usage config](herdr-app/README.md#usage-block)
 
 ## Use
 
