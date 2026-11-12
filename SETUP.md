@@ -304,13 +304,13 @@ Everything in this section is copied, never symlinked. [`herdr-app/README.md`](h
 
 ```sh
 for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid \
-    herdr-app-autoname herdr-app-icon; do
+    herdr-app-autoname herdr-app-icon herdr-app-servers; do
   put_file "$AI_ENV_REPO/herdr-app/bin/$name" "$HOME/.local/bin/$name" || break
   chmod +x "$HOME/.local/bin/$name"
 done
 ```
 
-They need `python3`, `/usr/sbin/lsof`, `/usr/bin/pbcopy` and `/usr/bin/open`; everything but Python ships with macOS. The mods call them by their `~/.local/bin` paths, and the scripts find `hc` on `PATH`, then in `~/.local/bin`.
+They need `python3`, `/usr/sbin/lsof`, `/usr/bin/pbcopy` and `/usr/bin/open`; everything but Python ships with macOS. `herdr-app-servers` also needs `tmux`, and `direnv` for folders with an `.envrc` (`brew install tmux direnv`). The mods call them by their `~/.local/bin` paths, and the scripts find `hc` on `PATH`, then in `~/.local/bin`.
 
 **Codex effort key.** For Codex, Cmd+Shift+E sends the full-cycle `alt+shift+e` only when `~/.local/share/codex-shortcuts/capabilities.json` identifies the running executable as an unchanged managed build. Section 9's managed shortcut installation writes that file. Without it, every Codex session gets `alt+.`, which only increases effort and stops at the top.
 
@@ -326,7 +326,7 @@ while IFS= read -r -d '' source; do
 done < <(git -C "$AI_ENV_REPO" ls-files -z -- herdr-app/home/)
 ```
 
-The loop installs the theme, the `main-plus` layout and seventeen mods. Only tracked files are copied, so a `gpui-kit.d.ts` or `jsconfig.json` that a check left in the checkout is skipped. When merging an existing `keys.json`, keep its sections and ask before replacing a key the owner already uses. The `layout:main-plus` section applies only while that layout shows.
+The loop installs the theme, the `main-plus` layout and eighteen mods. Only tracked files are copied, so a `gpui-kit.d.ts` or `jsconfig.json` that a check left in the checkout is skipped. When merging an existing `keys.json`, keep its sections and ask before replacing a key the owner already uses. The `layout:main-plus` section applies only while that layout shows.
 
 `main-plus` needs the `git-graph` and `automations` mods below; until they are installed, its Graph and Automations panels report errors. Its Usage block says "No usage readings yet" until [section 10](#account-usage) starts `herdr-usage`; that is not an error.
 
@@ -343,6 +343,21 @@ Add its hooks to Claude Code and Codex. It backs up each file, leaves other hook
 Pi gets the `herdr-app-autoname.ts` extension in section 7, and the `pane-plus` header that shows the names came with the mods above, along with `rename-pane` (Cmd+Shift+N) for naming a pane by hand. Names come from `openai-codex/gpt-6.1-sol` through Pi, so they start working once Pi is signed in to the Codex subscription (section 8). Section 11 checks it. Codex lists the new hooks under `/hooks`, where they should read Trusted; approve them there if not. A Codex already running needs a restart to load them; Claude picks them up on its own.
 
 Run the same three steps on every machine whose agents show up in this Herdr: the script, `install-hooks` and the Pi extension. Each machine names its own tabs in its own herdr-core, so the app needs nothing extra for remote spaces.
+
+### Servers panel
+
+`main-plus`'s Servers panel lists the owner's local dev servers, with Start, Stop and Restart for each one and each group. Its list names the owner's projects, folders and ports, so it never comes from this repo. Start it from the example, then replace the example's projects with the owner's:
+
+```sh
+new_config "$AI_ENV_REPO/herdr-app/servers.example.json" "$HOME/.config/herdr-app-servers/projects.json"
+"$HOME/.local/bin/herdr-app-servers" check
+```
+
+`check` lists the groups, and warns about a missing folder or a port two servers share. Until the list exists, the panel says where it goes. [`herdr-app/README.md`](herdr-app/README.md#the-list) describes each field.
+
+The panel's Remote section shows hosted servers from the list's `remote` entries, each up or off with its monthly cost. Leave `remote` out and the section doesn't show. Fly entries need the fly CLI, signed in to the owner's account (`brew install flyctl`, then `fly auth login`, which the owner runs). Then `herdr-app-servers remote` lists each entry and its cost.
+
+On another machine whose spaces show up in this Herdr, install the same CLI and give it a list of that machine's own servers. The panel then shows them under the machine's name. It's optional, and a machine without a list stays out of the panel. Its folders and ports often differ from this machine's, so ask the owner rather than copying this machine's list. Skip `remote` there. [`herdr-app/README.md`](herdr-app/README.md#other-machines) has the commands, which run from this machine through `hc`.
 
 ### Git graph, automations panel and CLI
 
@@ -494,7 +509,7 @@ Open Herdr from Applications, or run `herdr-app` from a shell. A Finder launch l
 herdr-app do layout.switch --name main-plus
 for mod in tab-move-left tab-move-right pane-next pane-prev pane-mover pane-mover-tabs \
     effort-cycle arrange-wide arrange-laptop link-picker scrollback-search tabs-plus pane-plus rename-pane \
-    workspace-chrome-plus agents-plus git-graph automations; do
+    workspace-chrome-plus agents-plus servers git-graph automations; do
   herdr-app check "$HOME/.config/herdr-app/mods/$mod" || break
 done
 find "$HOME/.config/herdr-app" -maxdepth 1 -name '*.error' -print
@@ -810,7 +825,7 @@ jq -r '.[] | .[] | select(startswith("mod.open:")) | ltrimstr("mod.open:")' "$HO
     test -f "$HOME/.config/herdr-app/mods/$mod/main.js" || echo "keys.json opens a missing mod: $mod"
   done
 for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid \
-    herdr-app-autoname herdr-app-icon herdr-usage herdr-automations ghostty-quad ghostty-dual; do
+    herdr-app-autoname herdr-app-icon herdr-app-servers herdr-usage herdr-automations ghostty-quad ghostty-dual; do
   test -x "$HOME/.local/bin/$name" || echo "missing: $name"
 done
 ```
@@ -821,9 +836,10 @@ Run the export's focused offline checks:
 
 ```sh
 cd "$AI_ENV_REPO"
-for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc; do
+for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-servers; do
   "$HOME/.local/bin/$name" --help >/dev/null || echo "failed: $name"
 done
+"$HOME/.local/bin/herdr-app-servers" status
 "$HOME/.local/bin/herdr-app-autoname" try --cwd "$HOME" "fix the google sign in redirect"
 bash -n "$HOME/.local/bin/herdr-app-grid"
 bash -n "$HOME/.local/bin/herdr-usage"
@@ -860,7 +876,7 @@ Use scratch spaces, tabs and harmless drafts. Record actual observations, not ju
 - [ ] Cmd+K in a Claude or Codex session that mentioned a harmless URL lists it; Enter opens, Ctrl+Y copies, Escape closes. In a plain shell it reads the screen instead.
 - [ ] Cmd+F searches the focused terminal's scrollback; Enter copies the line, Shift+Enter copies it with context, `/pattern/` is a regular expression.
 - [ ] `4x4` and `2x2` in a Herdr terminal open a new 2x2 or side-by-side tab in that space; in Ghostty they open a Ghostty window.
-- [ ] In `main-plus`, the Graph button and Cmd+Shift+G open git-graph for the focused repository, and Cmd+Shift+H opens Changes; the Automations button opens the panel, which lists `automations.yaml` without an error. The scheduler state matches the section 10 choice.
+- [ ] In `main-plus`, the Graph button and Cmd+Shift+G open git-graph for the focused repository, Cmd+Shift+H opens Changes, and Cmd+Shift+J opens Servers; the Automations button opens the panel, which lists `automations.yaml` without an error. The scheduler state matches the section 10 choice.
 - [ ] A Claude Code session started after setup in a Herdr terminal appears in the sidebar's Agents list, and `hc get <its address> --json | jq .status` shows `"app": "claude-code"` with a state. If it is missing, check `env | grep CLAUDE_CODE_DISABLE_TERMINAL_TITLE` in that terminal (section 4).
 - [ ] In a scratch tab, the first message to Claude, then to Codex, then to Pi names the pane header and the tab within about ten seconds; a later message in the same chat changes nothing; after `/clear` (Codex and Pi: `/new`) the next first message renames a generated tab name but not one typed by hand. In a numbered checkout the tab reads `<checkout> - <name>`. `herdr-app-autoname status` shows each decision. Cmd+Shift+N (or double-clicking the header's name) renames a pane; that name stays over later task names until it is cleared.
 - [ ] The sidebar's Usage block lists the signed-in Claude subscription with its 5h, 7d and Fable windows, then any other subscription and OpenAI, and a hover shows a reading only minutes old. If section 10's job was left off, record that; the block then says "No usage readings yet".
@@ -884,9 +900,10 @@ Leave a private setup report containing:
 Rollback is per component, not a wholesale replacement of HOME:
 
 - Restore reviewed config files from `AI_ENV_BACKUP`; remove only newly created files listed in the report. Preserve credentials and unrelated changes made after setup. Remove/revert only the shell source lines added here.
-- Herdr app files: switch away first (`herdr-app do layout.switch --name main`), then restore `settings.json` and `keys.json` from `AI_ENV_BACKUP`. Remove only what section 6 installed: the seventeen exported mod folders, `mods/git-graph`, `mods/automations`, `layouts/main-plus.json` and the theme. Never delete `~/.config/herdr-app` wholesale; the rest is the app's own.
+- Herdr app files: switch away first (`herdr-app do layout.switch --name main`), then restore `settings.json` and `keys.json` from `AI_ENV_BACKUP`. Remove only what section 6 installed: the eighteen exported mod folders, `mods/git-graph`, `mods/automations`, `layouts/main-plus.json` and the theme. Never delete `~/.config/herdr-app` wholesale; the rest is the app's own.
 - Run `herdr-app-autoname remove-hooks` and delete `~/.pi/agent/extensions/herdr-app-autoname.ts` before removing the helpers. Tab names it wrote stay; its state is in `~/.local/state/herdr-app-autoname/`.
-- Remove only the seven Herdr helpers from `~/.local/bin`, and restore `ghostty-quad`/`ghostty-dual` from the backup if they were replaced.
+- Before removing `herdr-app-servers`, stop the servers it started (`herdr-app-servers stop <group>` for each group); they run in its own tmux server, `tmux -L herdr-servers`. Its state is in `~/.local/state/herdr-app-servers/`. Keep `~/.config/herdr-app-servers/projects.json` unless the owner asks otherwise.
+- Remove only the eight Herdr helpers from `~/.local/bin`, and restore `ghostty-quad`/`ghostty-dual` from the backup if they were replaced.
 - Automations: `herdr-automations service uninstall` if section 10 installed it, then remove `~/.local/bin/herdr-automations`. Keep `automations.yaml` and its run history unless the owner asks otherwise.
 - Usage job: `launchctl bootout "gui/$(id -u)/io.mitchnick.herdr-usage"`, then remove its plist. Keep `~/.claude/usage-accounts/` unless the owner asks otherwise; it holds their private `.config.json`.
 - Removing the Herdr app itself: herdr-core keeps terminals running after the window closes. Check `hc ls` and end those terminals deliberately before removing `~/.local/bin/herdr-core` and `hc`. Then remove the app bundle and the `~/.local/bin/herdr-app` link.
@@ -913,6 +930,7 @@ Use this table when adding files. Every new runtime file, dependency, or config 
 | `herdr-app/home/` | copied into `~/.config/herdr-app/`; `settings.json` and `keys.json` merged, never symlinked | 6, 7, 11 |
 | `herdr-app/bin/` | `~/.local/bin/` | 6, 11 |
 | `herdr-app/automations/` | `~/.config/herdr/plugins/config/dnzzl.automations/`; login service optional | 6, 10 |
+| `herdr-app/servers.example.json` | the start of `~/.config/herdr-app-servers/projects.json`, which becomes the owner's own | 6 |
 | Upstream git-graph and automations (pinned, not in this repo) | mod folders copied into `~/.config/herdr-app/mods/`; CLI copied to `~/.local/bin/` | 6, 10, 11 |
 | `herdr/config/`, `herdr/agent-detection/` (legacy) | `~/.config/herdr/`; activate after plugin installation | L2, L3 |
 | `herdr/helpers/`, `herdr/lib/` (legacy) | `~/.local/bin/` and `~/.local/lib/herdr-arrange/`; collector optional | L2, L5 |

@@ -1,0 +1,46 @@
+{
+ "parallel": 4,
+ "groups": [
+  {
+   "key": "myapp",
+   "name": "My app",
+   "services": [
+    { "name": "postgres", "port": 5432, "url": "postgres://localhost:5432", "hint": "brew services start postgresql" },
+    { "name": "redis", "port": 6379, "url": "redis://localhost:6379", "hint": "brew services start redis" }
+   ],
+   "servers": [
+    { "id": "app0", "dir": "~/Projects/myapp/app0", "tunnel": "my-tunnel", "requires": ["postgres", "redis"], "services": [{ "name": "web", "port": 3100, "health": "/up" }] },
+    { "id": "app1", "dir": "~/Projects/myapp/app1", "requires": ["postgres", "redis"], "services": [{ "name": "web", "port": 3110, "health": "/up" }] }
+   ]
+  },
+  {
+   "key": "game",
+   "name": "Game",
+   "services": [
+    { "name": "postgres", "port": 5433, "url": "postgres://localhost:5433", "hint": "Start game0 first: it brings up the Docker database." }
+   ],
+   "servers": [
+    { "id": "game0", "dir": "~/Projects/game/game0", "owner": true, "open": "frontend", "services": [
+     { "name": "backend", "port": 3200, "health": "/up" }, { "name": "frontend", "port": 3201 }, { "name": "preview", "port": 4200, "optional": true } ] },
+    { "id": "game1", "dir": "~/Projects/game/game1", "requires": ["postgres"], "open": "frontend", "services": [
+     { "name": "backend", "port": 3210, "health": "/up" }, { "name": "frontend", "port": 3211 }, { "name": "preview", "port": 4210, "optional": true } ] }
+   ]
+  },
+  {
+   "key": "other",
+   "name": "Other",
+   "servers": [
+    { "id": "blog", "dir": "~/Projects/blog", "start": "overmind start -f Procfile.dev", "services": [{ "name": "web", "port": 3300, "health": "/up" }] },
+    { "id": "site", "dir": "~/Projects/site", "start": "python3 -m http.server 8000", "services": [{ "name": "web", "port": 8000 }] },
+    { "id": "docs", "dir": "~/Projects/docs", "start": "npm run dev", "logs": "~/.local/state/herdr-app-servers/logs/other-docs", "services": [{ "name": "web", "port": 4321, "health": "/favicon.svg" }] }
+   ]
+  }
+ ],
+ "remote": [
+  { "name": "My app Production", "apps": ["myapp", "myapp-db", { "app": "myapp-redis", "label": "redis" }] },
+  { "name": "My app Staging", "apps": ["myapp-staging", "myapp-staging-db"] },
+  { "name": "VPS", "kind": "server", "type": "CX22", "monthly": 4.5, "currency": "EUR",
+    "note": "A set price: check it against the invoice.",
+    "checks": [{ "name": "blog", "url": "https://blog.example.com/up" }] }
+ ]
+}

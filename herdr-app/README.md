@@ -19,7 +19,7 @@ The app's home is `~/.config/herdr-app/`. Read `herdr-app --skill` and the
 | `home/settings.json` | Theme `monokai-pro-spectrum`, font MesloLGS Nerd Font Mono 14, sounds off, zoom 1, minimum contrast 1 |
 | `home/keys.json` | Every key binding: `global`, `terminal` and `layout:main-plus` sections |
 | `home/themes/monokai-pro-spectrum.json` | Ghostty's Monokai Pro Spectrum palette, with `accent #8b888f`, `border #363537` and `working #69676c` (a gray agent spinner in place of yellow) |
-| `home/layouts/main-plus.json` | A clone of the shipped `main` layout: `tabs-plus` tab bar plus Graph and Automations panels beside Files and Changes, `workspace-chrome-plus` for the sidebar's top bar, `agents-plus` for the sidebar's agent list and `usage` for the sidebar's Usage block |
+| `home/layouts/main-plus.json` | A clone of the shipped `main` layout: `tabs-plus` tab bar plus Graph, Automations and Servers panels beside Files and Changes, `workspace-chrome-plus` for the sidebar's top bar, `agents-plus` for the sidebar's agent list and `usage` for the sidebar's Usage block |
 | `home/mods/tab-move-left`, `tab-move-right` | Move the focused tab one slot (no wrap) |
 | `home/mods/pane-next`, `pane-prev` | Cycle focus through the tab's panes in layout order (wraps) |
 | `home/mods/pane-mover`, `pane-mover-tabs` | Re-split, swap, or move the focused pane to another tab, space, new tab or new space |
@@ -27,11 +27,12 @@ The app's home is `~/.config/herdr-app/`. Read `herdr-app --skill` and the
 | `home/mods/arrange-wide`, `arrange-laptop` | Run `herdr-app-arrange wide`/`laptop` on the focused tab; a failure shows as a toast |
 | `home/mods/link-picker` | URLs the focused agent mentioned, from `herdr-app-links`; Enter opens, Ctrl+Y copies |
 | `home/mods/scrollback-search` | Searches the focused terminal's last 5000 lines (`hc read`); Enter copies the line |
-| `home/mods/tabs-plus` | A clone of the shipped `tabs` mod with Graph (before Changes) and Automations buttons, and `tabs-plus.graph` (Cmd+Shift+G) and `tabs-plus.changes` (Cmd+Shift+H) key commands. Its working spinner turns once every 20000ms instead of 900ms, as in `pane-plus` and `agents-plus` |
+| `home/mods/tabs-plus` | A clone of the shipped `tabs` mod with Graph (before Changes), Automations and Servers buttons, and `tabs-plus.graph` (Cmd+Shift+G), `tabs-plus.changes` (Cmd+Shift+H) and `tabs-plus.servers` (Cmd+Shift+J) key commands. Its working spinner turns once every 20000ms instead of 900ms, as in `pane-plus` and `agents-plus` |
 | `home/mods/pane-plus` | A clone of the shipped `pane` header. It shows a name typed in Rename pane (the terminal's `pane.name` label) if there is one; else, while an agent runs, the pane's task name (`autoname.task`) in place of "Claude Code" or "Codex". Double-click the name to rename the pane. `main-plus` uses it for every pane header |
 | `home/mods/agents-plus` | A clone of the shipped `agents` sidebar list whose working spinner turns once every 20000ms instead of 900ms. Its sort menu opens `agents-plus`, not the shipped mod |
 | `home/mods/workspace-chrome-plus` | A clone of the shipped `workspace-chrome` mod that draws the horn (`herdr-horn.svg`) beside "Herdr" instead of Herdr's ram. `main-plus` uses it only for the sidebar's top bar. `herdr-horn.svg` is also the Dock icon: on each start (macOS only) the top bar runs `herdr-app-icon --if-missing` detached, logging to `$TMPDIR/herdr-app-icon.log`, so an update's new bundle gets the horn back. The master copy is kept in OneDrive under `Apps/Herdr` |
 | `home/mods/usage` | The sidebar's Usage block: each Claude subscription and OpenAI, from the readings `herdr-usage` keeps on disk; see [Usage block](#usage-block). Its `place` is `none`, so it shows only where a layout puts it |
+| `home/mods/servers` | The Servers panel: every local dev server, on or off, with Start, Stop and Restart for each server and each group, every port's URL a click away, and hosted servers' state and monthly cost at the bottom; see [Servers panel](#servers-panel). Its `place` is `none` |
 | `home/mods/rename-pane` | The Rename pane dialog (Cmd+Shift+N, or double-click a header's name): sets or, when empty, removes the focused terminal's `pane.name` label in herdr-core, so the name survives app restarts |
 
 `bin/` installs into `~/.local/bin/`. Every script uses `$HOME`/`Path.home()`:
@@ -45,6 +46,7 @@ The app's home is `~/.config/herdr-app/`. Read `herdr-app --skill` and the
 | `herdr-app-grid` | `quad`/`dual`: a new tab in the calling terminal's space, split 2x2 or side by side. Exits 3 outside herdr-app so `ghostty-quad`/`ghostty-dual` can fall back to Ghostty |
 | `herdr-app-autoname` | Names panes and tabs from each chat's first message; see [Pane and tab names](#pane-and-tab-names). `install-hooks` adds its Claude Code and Codex hooks |
 | `herdr-app-icon` | Builds an `.icns` from the installed `workspace-chrome-plus/herdr-horn.svg` and sets it as Herdr.app's Finder custom icon (Dock, Finder, Cmd+Tab). Only Finder's custom-icon data is written; `Contents/` and the signature are untouched (`codesign --verify` passes, and only `--strict` objects to the Finder info). A Herdr update replaces the bundle and drops the icon; `workspace-chrome-plus` runs `--if-missing` on every app start, which exits at once while the bundle still has its `Icon\r` file. The Dock may show the ram until the app's next start. Needs `rsvg-convert` (`brew install librsvg`) and `swift` |
+| `herdr-app-servers` | Status, start, stop and restart for the dev servers in a private list, and the hosted servers' state and cost; the Servers panel runs it. See [Servers panel](#servers-panel). Needs `tmux`, `direnv` for folders with an `.envrc`, and `fly` for Fly entries |
 
 `automations/automations.yaml` is a starter config for the automations CLI
 (`backend: hc`, no automations). It installs to
@@ -98,6 +100,9 @@ except for an added white outline (MIT, see `LICENSE-herdr-horn` beside it).
 - **Subscription names and machine names.** This repo is public, so
   `~/.claude/usage-accounts/.config.json` stays on the machine, and neither the
   mod nor `herdr-usage` may hard-code what it holds. See [Usage block](#usage-block).
+- **The server list.** `~/.config/herdr-app-servers/projects.json` names the
+  owner's projects, folders and ports, so it stays on the machine.
+  [`servers.example.json`](servers.example.json) shows its shape.
 - **The automations LaunchAgent.** `herdr-automations service install`
   regenerates it with the current shell's `PATH`; it is not a portable file.
 
@@ -198,6 +203,171 @@ That is `~/.claude/usage-accounts/.config.json`.
   needs key-based ssh, `jq`, `curl` and Claude's login in
   `~/.claude/.credentials.json`. `CLAUDE_USAGE_HOSTS` overrides the list,
   separated by spaces.
+
+## Servers panel
+
+The tab bar's Servers button, or Cmd+Shift+J (`tabs-plus.servers` in
+`keys.json`, shown at the panel's foot), opens every local dev server in one
+list, by group. Each row has a dot (filled when on, hollow when off, pulsing
+while booting, starting or stopping), its branch and its port.
+
+- **Ports:** click any port, a group's shared ones too, to copy its URL.
+- **A row's buttons:** Start or Stop, Restart, open in the browser, and follow
+  its log. The log opens as a "<name> log" tab in the project's space, and a
+  second click shows that tab again.
+- **A group's header:** a bar of its servers, filling from the left: green for
+  up, yellow on the way, red for an error, gray for off. Start all starts the
+  servers that are off; Stop all and Restart all act on the ones that are on.
+  Those two ask again: the first click arms the button ("Stop 5?") for 4
+  seconds.
+- **Errors:** a Rails app whose `/up` fails shows the error under its row, most
+  often a pending migration. A start that fails says why, there and in a toast.
+- **Other machines:** each machine Herdr connects to that has its own list
+  gets a section under its name, below "This computer". See
+  [Other machines](#other-machines).
+- **Remote**, at the bottom: hosted servers, each up or off, what runs, and its
+  cost a month. See [Remote](#remote). It has no buttons.
+
+[`bin/herdr-app-servers`](bin/herdr-app-servers) does the work, and the mod
+only draws and clicks. The same commands work in a terminal:
+
+```sh
+herdr-app-servers status                 # every server, asked fresh
+herdr-app-servers restart app1           # one server
+herdr-app-servers stop myapp             # every server in the group that is on
+herdr-app-servers start myapp/app0 --wait
+herdr-app-servers log app1               # the newest log's path
+herdr-app-servers log app1 --follow      # follow it, and the next after a restart
+herdr-app-servers remote                 # hosted servers and their cost
+herdr-app-servers check                  # validate the list
+```
+
+### The list
+
+The list is private: `~/.config/herdr-app-servers/projects.json`, which starts
+from [`servers.example.json`](servers.example.json). `HERDR_APP_SERVERS_CONFIG`
+picks another file, and its state then lives in a `state/` folder beside it.
+
+| Field | On | What |
+|---|---|---|
+| `parallel` | the file | How many servers a group action boots at once (4) |
+| `key`, `name` | group | `key` is what the CLI takes (`restart myapp`), `name` what the panel shows |
+| `services` | group | Shared ports, such as a database. They get a status dot and a copy button, with no Start/Stop |
+| `id`, `name` | server | `id` is unique across the list; `group/id` also works |
+| `dir` | server | The folder. Commands run there, and only processes whose working folder is inside it count as this server's |
+| `start` | server | What starts it (`bin/dev`) |
+| `services` | server | `{name, port}` each. `health` (`/up`) marks the one whose answer decides the state; `optional` marks one a start doesn't open (an E2E preview); `url` overrides `http://localhost:<port>`. A dev server that logs every page request, such as Astro's, can take a static file from `public/` (`/favicon.svg`) instead, which answers without a log line |
+| `open` | server | The service the browser button opens and the row's port copies (the one with `health`) |
+| `requires` | server | Group services that must be listening before it starts |
+| `owner` | server | It brings the group's services up itself. A group start runs it first, and the rest skip `requires` until it has |
+| `tunnel` | server | The cloudflared tunnel it runs. Start refuses while a process from another folder runs that tunnel, since both would share its hostname |
+| `logs` | server | Its log folder. By default `tmp/dev-logs/` in its folder when it has a `tmp/`, else `~/.local/state/herdr-app-servers/logs/<group>-<id>`. Set it for a repo whose git doesn't ignore `tmp/` |
+| `space` | group or server | The Herdr space its log opens in, on the list's own machine. Without it: the space named like the server, then like the group's key or name, then the one whose folder holds the server's, else the space showing |
+| `remote` | the file | Hosted servers for the Remote section; see [Remote](#remote) |
+| `fly_prices` | the file | Overrides Fly's prices (`shared_cpu`, `performance_cpu`, `ram_gb`, `volume_gb`, `ipv4`; USD a month) |
+
+### How it works
+
+| State | Means |
+|---|---|
+| `up` | Its `health` path (`/up`) answers 200 (with no `health`: the port is listening) |
+| `error` | It answers anything else; the reason is the heading of Rails' error page |
+| `busy` | Listening, but no answer in 2s: a breakpoint, or a slow first request |
+| `boot` | Nothing listening yet, but its tmux session or Overmind is alive |
+| `down` | Nothing listening and nothing alive |
+| `foreign` | Its port is held by a process from outside its folder |
+
+- **Status asks the ports**, not the process table: one `lsof` for every port
+  in the list. libproc gives each listener's folder and start time. The CLI
+  keeps a health answer for each listening process for two minutes. The panel
+  polls every 3 seconds while it shows, and asks the health path again every 15. While
+  it's hidden it doesn't poll, unless an action it started is still running.
+- **A click returns at once.** A mod's `exec` dies after 30 seconds, and a
+  start can take three minutes, so the CLI leaves a detached worker (its own
+  session, none of the caller's pipes). The worker records each server's work
+  in `~/.local/state/herdr-app-servers/actions/` and the outcome in
+  `results/`. A file lock makes a second click refuse rather than start twice.
+  A worker that died leaves no row stuck on "starting": the next status turns
+  it into a failed result, which shows under the row and in a toast. The panel
+  shows "starting" or "stopping" from the moment of the click.
+- **Start** runs `start` in a private tmux server (`tmux -L herdr-servers`),
+  through a fresh `zsh -lic` (rbenv, nvm and the rest come from `.zshrc`) and,
+  with an `.envrc`, `direnv exec` (direnv's hook only runs at a prompt). tmux
+  gives it a real terminal. Without one, Foreman's children see stdin close,
+  and Tailwind's watcher quits on that, taking the formation down. Output goes
+  to `<dir>/tmp/dev-logs/YYYY-MM-DD.log` through `tee -i`. The worker waits for
+  `up` or `error`, gives up on `down` after 20 seconds, and stops waiting after
+  three minutes.
+- **Stop:** `overmind quit` when its socket answers, else Ctrl-C into its tmux
+  session. Twenty seconds later, `overmind kill` or `kill-session`, then TERM,
+  and KILL after 10 seconds, for anything from inside the folder still
+  listening on its ports. A server someone started by hand in a terminal stops
+  the same way. Then a stale `.overmind.sock` and `tmp/pids/server.pid` go. This
+  is Gaffer's `bin/dev-all stop`, as is the down reason: the last complaint
+  before a process exited, and nothing when the run was stopped on purpose.
+- **Agents:** start, stop and restart refuse when `CLAUDECODE` or another agent
+  marker is set, because a person runs the dev servers. It's a speed bump, not a
+  lock, and it is off for a list given with `HERDR_APP_SERVERS_CONFIG`.
+
+### Other machines
+
+The panel asks every machine in `hc machine ls` the same question, through
+herdr-core, by running that machine's own `~/.local/bin/herdr-app-servers`
+(found through its `$HOME`, since herdr-core gives programs there a bare
+`PATH`). A machine that answers with a list gets a section under its name, as
+in the spaces list, and the panel's count covers them all.
+
+- **To add one,** install the CLI there and give it its own list, with that
+  machine's folders and ports. From this machine:
+
+  ```sh
+  hc exec -i --on <machine> 'mkdir -p ~/.local/bin && cat > ~/.local/bin/herdr-app-servers && chmod +x ~/.local/bin/herdr-app-servers' < herdr-app/bin/herdr-app-servers
+  hc exec -i --on <machine> 'mkdir -p ~/.config/herdr-app-servers && cat > ~/.config/herdr-app-servers/projects.json' < its-list.json
+  hc exec --on <machine> '~/.local/bin/herdr-app-servers check'
+  ```
+
+  The quotes keep `~` for that machine's shell to expand.
+
+  It needs the same tools there (`tmux`, `direnv`). Copy the CLI again after
+  changing it here.
+- **The worker drops `HC_SCOPE`.** herdr-core ends every process that still
+  carries an exec's `HC_SCOPE` token once the exec returns, however detached it
+  is. A worker that kept the token would die before it starts anything.
+- **Its buttons act there:** Start, Stop and Restart run the CLI on that
+  machine, and the log opens in one of its spaces (the usual rules, else the
+  space it shows, else its first). It has no open-in-browser button, because
+  its `localhost` isn't this one's. A port still copies its URL.
+- **Without a list,** a machine stays out of sight and is asked again each
+  minute. An offline one isn't asked, and its section says "offline".
+- **Remote** is only this machine's. Leave `remote` out of the other lists.
+
+### Remote
+
+The list's `remote` entries are things that cost money while they exist. The
+panel asks `herdr-app-servers remote --json` when it opens and every minute
+while it shows. It only reads.
+
+- **A Fly entry** (`apps`, each a name or `{app, label}`): `fly machines list`
+  for each app, all at once. The first app decides up or off: up when one of
+  its machines runs, "valkey only" when only another app's do, off when none
+  do. Each running kind is a chip (`web 1`, `postgres 1`), named by its process
+  group, `postgres` for a Postgres image, else its `label` or app name. A
+  failing Fly health check turns it red. Volumes and IPs are asked every 10
+  minutes. When Fly doesn't answer, the last answer stays, dimmed, with its age.
+- **The cost** is a month at today's rate, from Fly's list prices in `iad` and
+  `ewr` (November 2026): per vCPU and per GB of RAM for each running machine,
+  plus volumes and dedicated IPv4. It leaves out a stopped machine's disk (a few
+  cents), snapshots and bandwidth, and shows ≈ when a machine runs in a dearer
+  region. So a staging stack that's off costs only its volumes.
+- **A server entry** (`kind: "server"`) is a box at a set price: `type`,
+  `count`, `monthly`, `currency`, and `checks`, URLs that must answer (Rails'
+  `/up`). It's up when they all do. Its price is whatever the list says, so
+  check it against the invoice.
+
+The fly CLI must be installed and signed in. Only `fly machines list`,
+`fly volumes list` and `fly ips list` run.
+
+Its icons are Lucide's (ISC, `mods/servers/LICENSE-Lucide.txt`).
 
 ## How the key-driven mods work
 

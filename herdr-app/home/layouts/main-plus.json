@@ -164,6 +164,13 @@
                       "content": {
                         "mod": "automations"
                       }
+                    },
+                    {
+                      "id": "servers",
+                      "type": "block",
+                      "content": {
+                        "mod": "servers"
+                      }
                     }
                   ],
                   "active": "files"
