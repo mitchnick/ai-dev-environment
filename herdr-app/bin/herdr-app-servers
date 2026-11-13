@@ -1,0 +1,1608 @@
+#!/usr/bin/env python3
+"""herdr-app-servers: the local dev servers behind Herdr's Servers panel.
+
+  herdr-app-servers status [--json] [--deep] [TARGET...]
+  herdr-app-servers start|stop|restart TARGET... [--json] [--wait]
+  herdr-app-servers check            validate the server list
+  herdr-app-servers log TARGET [--follow]
+                                     print the newest log's path, or follow
+                                     it (and the next one, after a restart)
+  herdr-app-servers remote [--json]  hosted servers: up or down, and their cost
+
+A TARGET is a server id (app2), a group key (myapp: each server in it), or
+group/id when a name is in two places. group/all is the whole group. A group
+start touches only the servers that are off; a group stop or restart only the
+ones that are on.
+
+The server list is private: ~/.config/herdr-app-servers/projects.json, or
+HERDR_APP_SERVERS_CONFIG. herdr-app/servers.example.json in the
+ai-dev-environment repo shows its shape. Nothing in this file names a project.
+
+status asks the ports, not the process table: one lsof for every listener,
+then the health path (Rails' /up, or any path the list gives) on the ports
+that are listening. With --json, a health answer stands for that listening
+pid for two minutes, so the panel's 3-second poll costs one lsof; --deep, and
+plain `status`, ask again. A server's state:
+
+  up       its health path answers 200 (no health path: its port is listening)
+  error    it answers anything else; the reason is the heading of Rails'
+           error page, most often a pending migration
+  busy     listening, but no answer in 2s (a breakpoint, a slow first
+           request)
+  boot     nothing listening yet, but its tmux session or Overmind is alive
+  down     nothing listening and nothing alive
+  foreign  its port is held by a process from outside its folder
+
+start, stop and restart return at once (a Herdr mod's exec dies after 30s) and
+leave a detached worker; --wait waits for it. The worker records each server's
+work in ~/.local/state/herdr-app-servers/actions/ and its outcome in results/.
+
+Start runs the server's command (bin/dev unless the list says otherwise) in a
+private tmux server, `tmux -L herdr-servers`. That gives it a real terminal:
+started without one, Foreman's children see stdin close, Tailwind's watcher
+quits on that, and Foreman takes the whole formation down with it. The command
+runs through `zsh -lic`, because rbenv, nvm and the rest come from .zshrc,
+and `direnv exec`, because direnv's hook only runs at a prompt. Its output goes
+to <dir>/tmp/dev-logs/YYYY-MM-DD.log through `tee -i` (Ctrl-C would otherwise
+kill tee first). The worker then waits for up or error, gives up on down after
+20s, and stops waiting after 3 minutes.
+
+Stop: `overmind quit` when its socket answers, else Ctrl-C into the tmux
+session. After 20s, `overmind kill` or kill-session; then TERM, and KILL after
+10s, for anything from inside the folder still listening on its ports. Then a
+stale .overmind.sock and tmp/pids/server.pid go. Ported from Gaffer's
+bin/dev-all (stop_one, leftovers, last_words).
+
+start, stop and restart refuse in an agent's shell (CLAUDECODE and friends):
+a person runs the dev servers. It's a speed bump, not a lock, and it is off
+for a server list given with HERDR_APP_SERVERS_CONFIG.
+
+remote reads the list's "remote" entries, and only reads. A Fly entry names
+its apps; `fly machines list` gives each machine's size and state, and the
+cost is Fly's list price for what runs now, plus volumes and dedicated IPv4
+(stopped machines' disks, snapshots and bandwidth are left out). A server
+entry is a box with a set monthly price, up when its check URLs answer.
+"""
+
+import concurrent.futures
+import ctypes
+import datetime
+import fcntl
+import html
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import traceback
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HOME = Path.home()
+DEFAULT_CONFIG = HOME / ".config" / "herdr-app-servers" / "projects.json"
+CONFIG = Path(os.path.expanduser(os.environ.get("HERDR_APP_SERVERS_CONFIG") or str(DEFAULT_CONFIG)))
+OVERRIDDEN = os.path.realpath(CONFIG) != os.path.realpath(DEFAULT_CONFIG)
+STATE = Path(os.path.expanduser(
+    os.environ.get("HERDR_APP_SERVERS_STATE")
+    or (str(CONFIG.parent / "state") if OVERRIDDEN else str(HOME / ".local" / "state" / "herdr-app-servers"))
+))
+
+AGENT_MARKERS = ("CLAUDECODE", "CODEX_SANDBOX", "CODEX_THREAD_ID", "PI_CODING_AGENT")
+HEALTH_TIMEOUT = 2.0
+HEALTH_TTL = 120  # seconds an /up answer stands for the same listening pid
+BUSY_TTL = 15
+SETTLE_CAP = 180
+DOWN_GRACE = 20
+STOP_WAIT = 20
+TERM_WAIT = 10
+ACTION_TTL = 15 * 60  # an action older than this is stale, whatever its pid
+LOG_KEEP_DAYS = 2
+# The environment a started server gets, before zsh's own files add the rest.
+KEEP_ENV = ("HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SSH_AUTH_SOCK", "__CF_USER_TEXT_ENCODING")
+
+# Herdr runs a mod's programs with the login shell's PATH, or less.
+for _extra in ("/opt/homebrew/bin", "/usr/local/bin"):
+    if _extra not in os.environ.get("PATH", "").split(":"):
+        os.environ["PATH"] = (os.environ.get("PATH") or "/usr/bin:/bin:/usr/sbin:/sbin") + ":" + _extra
+
+LSOF = shutil.which("lsof") or "/usr/sbin/lsof"
+TMUX = shutil.which("tmux")
+OVERMIND = shutil.which("overmind")
+DIRENV = shutil.which("direnv")
+FLY = shutil.which("fly") or shutil.which("flyctl")
+
+# Fly's list prices in its cheapest regions (iad, ewr), USD a month, from
+# fly.io/docs/about/pricing on 2026-11-04. A running machine costs per vCPU
+# plus per GB of RAM: shared-cpu-1x with 256MB is 0.69 + 0.25 × 6.00 = $2.19.
+# A volume costs while it exists, machine running or not. "fly_prices" in the
+# list overrides any of these.
+FLY_PRICES = {"shared_cpu": 0.69, "performance_cpu": 21.00, "ram_gb": 6.00, "volume_gb": 0.15, "ipv4": 2.00}
+FLY_BASE_REGIONS = ("iad", "ewr")
+FLY_TIMEOUT = 20
+FLY_SLOW_TTL = 600  # volumes and IPs rarely change: asked again after 10 minutes
+CHECK_TIMEOUT = 6
+
+
+# --- small helpers ------------------------------------------------------------
+
+
+def tilde(p):
+    p, h = str(p), str(HOME)
+    return "~" + p[len(h):] if p == h or p.startswith(h + "/") else p
+
+
+def inside(path, folder):
+    path, folder = str(path or ""), str(folder)
+    return bool(path) and (path == folder or path.startswith(folder.rstrip("/") + "/"))
+
+
+def run(argv, cwd=None, timeout=10):
+    try:
+        r = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout, r.stderr
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 127, "", str(e)
+
+
+def read_json(path, default=None):
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=1) + "\n")
+    os.replace(tmp, path)
+
+
+def pid_alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def mtime(path):
+    try:
+        return int(Path(path).stat().st_mtime)
+    except (OSError, TypeError):
+        return None
+
+
+def say(msg):
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+
+# --- the server list ------------------------------------------------------------
+
+
+class ConfigError(Exception):
+    pass
+
+
+def need(raw, field, where):
+    if not isinstance(raw, dict) or raw.get(field) in (None, ""):
+        raise ConfigError(f"{where}: needs \"{field}\"")
+    return raw[field]
+
+
+class Service:
+    def __init__(self, raw, where):
+        self.name = str(need(raw, "name", where))
+        try:
+            self.port = int(need(raw, "port", f"{where} {self.name}"))
+        except ValueError:
+            raise ConfigError(f"{where} {self.name}: port must be a number")
+        self.url = raw.get("url") or f"http://localhost:{self.port}"
+        self.health = raw.get("health")
+        self.optional = bool(raw.get("optional"))
+        self.hint = raw.get("hint")
+
+
+class Server:
+    def __init__(self, raw, group, cfg):
+        self.cfg, self.group = cfg, group
+        self.id = str(need(raw, "id", f"group {group.key}"))
+        self.key = f"{group.key}/{self.id}"
+        self.name = raw.get("name") or self.id
+        self.dir = Path(os.path.realpath(os.path.expanduser(str(need(raw, "dir", self.key)))))
+        self.start = raw.get("start") or "bin/dev"
+        self.tunnel = raw.get("tunnel")
+        self.owner = bool(raw.get("owner"))
+        self.requires = list(raw.get("requires") or [])
+        self.services = [Service(v, self.key) for v in raw.get("services") or []]
+        if not self.services:
+            raise ConfigError(f"{self.key}: needs at least one service with a port")
+        self.main = next((v for v in self.services if v.health), self.services[0])
+        self.open = next((v for v in self.services if v.name == raw.get("open")), self.main)
+        self.logs = raw.get("logs")
+        self.space = raw.get("space") or group.space
+        self.session = re.sub(r"[^A-Za-z0-9_-]", "_", f"{group.key}-{self.id}")
+        for name in self.requires:
+            if not any(v.name == name for v in group.services):
+                raise ConfigError(f"{self.key}: requires \"{name}\", which isn't one of {group.key}'s services")
+
+
+class Group:
+    def __init__(self, raw, cfg):
+        self.key = str(need(raw, "key", "a group"))
+        if "/" in self.key:
+            raise ConfigError(f"group {self.key}: a key can't hold /")
+        self.name = raw.get("name") or self.key
+        self.space = raw.get("space")
+        self.services = [Service(v, self.key) for v in raw.get("services") or []]
+        self.servers = [Server(s, self, cfg) for s in raw.get("servers") or []]
+
+
+class Remote:
+    """A hosted thing that costs money: some Fly apps, or a box at a set price."""
+
+    def __init__(self, raw, where):
+        self.name = str(need(raw, "name", where))
+        where = f"{where} {self.name}"
+        self.kind = raw.get("kind") or ("fly" if raw.get("apps") else "server")
+        self.note = raw.get("note")
+        if self.kind == "fly":
+            self.apps = []
+            for a in raw.get("apps") or []:
+                a = {"app": a} if isinstance(a, str) else a
+                self.apps.append({"app": str(need(a, "app", where)), "label": a.get("label")})
+            if not self.apps:
+                raise ConfigError(f"{where}: needs \"apps\", the Fly apps it is made of")
+        elif self.kind == "server":
+            try:
+                self.monthly = float(need(raw, "monthly", where))
+                self.count = int(raw.get("count") or 1)
+            except (TypeError, ValueError):
+                raise ConfigError(f"{where}: monthly and count must be numbers")
+            self.currency = str(raw.get("currency") or "USD").upper()
+            self.type = raw.get("type") or "server"
+            self.checks = [{"name": str(need(c, "name", where)), "url": str(need(c, "url", where))}
+                           for c in raw.get("checks") or []]
+        else:
+            raise ConfigError(f"{where}: kind is \"fly\" or \"server\"")
+
+
+class Config:
+    def __init__(self):
+        try:
+            raw = json.loads(CONFIG.read_text())
+        except FileNotFoundError:
+            raise ConfigError(f"no server list at {tilde(CONFIG)}. Start from herdr-app/servers.example.json in ai-dev-environment.")
+        except (OSError, ValueError) as e:
+            raise ConfigError(f"{tilde(CONFIG)}: {e}")
+        if not isinstance(raw, dict):
+            raise ConfigError(f"{tilde(CONFIG)}: expected an object with \"groups\"")
+        self.parallel = max(1, int(raw.get("parallel") or 4))
+        self.socket = str(raw.get("tmux_socket") or "herdr-servers")
+        self.groups = [Group(g, self) for g in raw.get("groups") or []]
+        self.servers = [s for g in self.groups for s in g.servers]
+        self.remote = [Remote(r, "remote") for r in raw.get("remote") or []]
+        self.fly_prices = {**FLY_PRICES, **(raw.get("fly_prices") or {})}
+        self.by_key = {}
+        for s in self.servers:
+            if s.key in self.by_key:
+                raise ConfigError(f"{s.key} is listed twice")
+            self.by_key[s.key] = s
+        keys = [g.key for g in self.groups]
+        for k in keys:
+            if keys.count(k) > 1:
+                raise ConfigError(f"group {k} is listed twice")
+
+    def server_for_dir(self, path):
+        hits = [s for s in self.servers if inside(path, s.dir)]
+        return max(hits, key=lambda s: len(str(s.dir))) if hits else None
+
+    def ports(self):
+        return {v.port for s in self.servers for v in s.services} | {v.port for g in self.groups for v in g.services}
+
+
+def resolve(cfg, names):
+    """[(server, via_group)] for the names, in list order, each server once."""
+    out, seen = [], set()
+
+    def add(servers, via):
+        for s in servers:
+            if s.key not in seen:
+                seen.add(s.key)
+                out.append((s, via))
+
+    groups = {g.key: g for g in cfg.groups}
+    for name in names:
+        if "/" in name:
+            gk, _, sid = name.partition("/")
+            g = groups.get(gk)
+            if not g:
+                raise ConfigError(f"no group {gk}; groups: {', '.join(groups)}")
+            if sid in ("", "all", "*"):
+                add(g.servers, True)
+                continue
+            s = cfg.by_key.get(name)
+            if not s:
+                raise ConfigError(f"no server {sid} in {gk}; it has {', '.join(x.id for x in g.servers)}")
+            add([s], False)
+            continue
+        g = groups.get(name)
+        matches = [s for s in cfg.servers if s.id == name]
+        if g and matches:
+            raise ConfigError(f"{name} is a group and a server: say {matches[0].key} for the server or {name}/all for the group")
+        if g:
+            add(g.servers, True)
+        elif len(matches) == 1:
+            add(matches, False)
+        elif matches:
+            raise ConfigError(f"{name} is in more than one group: say {' or '.join(s.key for s in matches)}")
+        else:
+            raise ConfigError(f"no server or group called {name}")
+    return out
+
+
+# --- one look at the machine ---------------------------------------------------
+
+
+def listeners(ports=None):
+    """{port: [{pid, command}]} for TCP ports listening here (all, or just these)."""
+    spec = "-iTCP" if ports is None else "-iTCP:" + ",".join(str(p) for p in sorted(ports))
+    if ports is not None and not ports:
+        return {}
+    _, out, _ = run([LSOF, "-nP", spec, "-sTCP:LISTEN", "-Fpcn"])
+    found, pid, cmd = {}, None, None
+    for line in out.splitlines():
+        kind, value = line[:1], line[1:]
+        if kind == "p":
+            pid, cmd = int(value), None
+        elif kind == "c":
+            cmd = value
+        elif kind == "n" and pid is not None:
+            m = re.search(r":(\d+)$", value)
+            if m:
+                holders = found.setdefault(int(m.group(1)), [])
+                if not any(h["pid"] == pid for h in holders):
+                    holders.append({"pid": pid, "command": cmd or "?"})
+    return found
+
+
+def cwds(pids):
+    pids = sorted(set(pids))
+    if not pids:
+        return {}
+    _, out, _ = run([LSOF, "-a", "-p", ",".join(map(str, pids)), "-d", "cwd", "-Fn"])
+    found, pid = {}, None
+    for line in out.splitlines():
+        if line.startswith("p"):
+            pid = int(line[1:])
+        elif line.startswith("n") and pid is not None:
+            found[pid] = line[1:]
+    return found
+
+
+class _BsdInfo(ctypes.Structure):
+    """struct proc_bsdinfo, for its start time."""
+    _fields_ = [(n, ctypes.c_uint32) for n in (
+        "flags", "status", "xstatus", "pid", "ppid", "uid", "gid", "ruid", "rgid", "svuid", "svgid", "rfu")] + [
+        ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32)] + [
+        (n, ctypes.c_uint32) for n in ("nfiles", "pgid", "pjobc", "tdev", "tpgid")] + [
+        ("nice", ctypes.c_int32), ("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64)]
+
+
+try:
+    _LIBPROC = ctypes.CDLL("/usr/lib/libproc.dylib")
+    _LIBPROC.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+except OSError:
+    _LIBPROC = None
+PROC_PIDTBSDINFO, PROC_PIDVNODEPATHINFO = 3, 9
+VNODE_INFO_SIZE, MAXPATHLEN = 152, 1024  # struct vnode_info; the cwd path follows it
+
+
+def proc_facts(pids):
+    """({pid: start epoch}, {pid: cwd}) from libproc: microseconds each, where
+    `ps -o etime` takes 200ms and lsof by pid 100ms. A pid it can't read (another
+    user's) falls back to ps and lsof."""
+    started, where, missed = {}, {}, []
+    for pid in set(pids):
+        if not _LIBPROC:
+            missed.append(pid)
+            continue
+        info = _BsdInfo()
+        buf = ctypes.create_string_buffer(2 * (VNODE_INFO_SIZE + MAXPATHLEN))
+        if _LIBPROC.proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info) \
+                or _LIBPROC.proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, buf, len(buf)) != len(buf):
+            missed.append(pid)
+            continue
+        started[pid] = int(info.start_sec)
+        path = buf.raw[VNODE_INFO_SIZE:VNODE_INFO_SIZE + MAXPATHLEN].split(b"\0")[0]
+        where[pid] = path.decode("utf-8", "replace")
+    if missed:
+        started.update(start_times(missed))
+        where.update(cwds(missed))
+    return started, where
+
+
+def parse_etime(text):
+    days = 0
+    if "-" in text:
+        d, text = text.split("-", 1)
+        days = int(d)
+    parts = [int(x) for x in text.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    h, m, s = parts[-3:]
+    return days * 86400 + h * 3600 + m * 60 + s
+
+
+def start_times(pids):
+    pids = sorted(set(pids))
+    if not pids:
+        return {}
+    _, out, _ = run(["/bin/ps", "-o", "pid=,etime=", "-p", ",".join(map(str, pids))])
+    now, found = int(time.time()), {}
+    for line in out.splitlines():
+        bits = line.split()
+        if len(bits) == 2:
+            try:
+                found[int(bits[0])] = now - parse_etime(bits[1])
+            except ValueError:
+                pass
+    return found
+
+
+def tmux_sessions(sock):
+    if not TMUX:
+        return {}
+    code, out, _ = run([TMUX, "-L", sock, "list-sessions", "-F", "#{session_name}\t#{session_created}"])
+    found = {}
+    if code == 0:
+        for line in out.splitlines():
+            name, _, created = line.partition("\t")
+            found[name] = int(created) if created.isdigit() else None
+    return found
+
+
+def overmind_running(folder):
+    """Whether Overmind answers on the folder's socket. A connect is what
+    `overmind status` does first, without starting a process per folder."""
+    path = Path(folder) / ".overmind.sock"
+    if not path.exists():
+        return False
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(1)
+    try:
+        s.connect(str(path))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+class Snapshot:
+    """Listeners on the list's ports, their folders and ages, tmux sessions."""
+
+    def __init__(self, cfg, servers=None):
+        self.cfg = cfg
+        servers = cfg.servers if servers is None else servers
+        own = {v.port for s in servers for v in s.services}
+        self.ports = listeners(own | {v.port for s in servers for v in s.group.services})
+        # Only a server's own ports need a folder and an age; shared ones don't.
+        self.started, self.cwd = proc_facts(h["pid"] for p in own for h in self.ports.get(p, []))
+        self.sessions = tmux_sessions(cfg.socket)
+        self._overmind = {}
+
+    def overmind(self, s):
+        if s.key not in self._overmind:
+            self._overmind[s.key] = overmind_running(s.dir)
+        return self._overmind[s.key]
+
+    def holders(self, s, v):
+        """(mine, others): who listens on a service's port, from inside its folder or not."""
+        hs = self.ports.get(v.port, [])
+        mine = [h for h in hs if inside(self.cwd.get(h["pid"]), s.dir)]
+        return mine, [h for h in hs if h not in mine]
+
+    def alive(self, s):
+        return s.session in self.sessions or self.overmind(s)
+
+    def on(self, s):
+        return any(self.holders(s, v)[0] for v in s.services) or self.alive(s)
+
+
+# --- health ---------------------------------------------------------------------
+
+NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def error_reason(body, code, path="/up"):
+    m = re.search(r"<h1[^>]*>(.*?)</h1>", body, re.S | re.I)
+    if m:
+        text = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", m.group(1))).split())
+        if text:
+            return text[:160]
+    try:
+        data = json.loads(body)
+        if isinstance(data, dict):
+            for k in ("exception", "error", "message"):
+                if data.get(k):
+                    return " ".join(str(data[k]).split())[:160]
+    except ValueError:
+        pass
+    return f"{path} answers {code}"
+
+
+def ask_health(port, path):
+    """(state, code, reason) from one GET of the path."""
+    silent = f"listening, but {path} gave no answer in 2s (a breakpoint, or a slow first request)"
+    try:
+        with NO_PROXY.open(f"http://localhost:{port}{path}", timeout=HEALTH_TIMEOUT) as r:
+            if r.status == 200:
+                return "up", 200, None
+            return "error", r.status, f"{path} answers {r.status}"
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(65536).decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return "error", e.code, error_reason(body, e.code, path)
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, socket.timeout) or "timed out" in str(e.reason):
+            return "busy", None, silent
+        return "boot", None, None
+    except socket.timeout:
+        return "busy", None, silent
+    except OSError:
+        return "boot", None, None
+
+
+def health_for(servers, snap, deep):
+    """{key: answer} for each listed server whose health port listens from its folder."""
+    path = STATE / "health.json"
+    cache = read_json(path, {}) or {}
+    now, found, todo = time.time(), {}, []
+    for s in servers:
+        v = s.main
+        if not v.health:
+            continue
+        mine, _ = snap.holders(s, v)
+        if not mine:
+            continue
+        pid = mine[0]["pid"]
+        c = cache.get(s.key)
+        ttl = BUSY_TTL if c and c.get("state") == "busy" else HEALTH_TTL
+        if not deep and c and c.get("pid") == pid and now - c.get("at", 0) < ttl:
+            found[s.key] = c
+        else:
+            todo.append((s, pid))
+    if todo:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(todo))) as pool:
+            answers = list(pool.map(lambda t: ask_health(t[0].main.port, t[0].main.health), todo))
+        for (s, pid), (state, code, reason) in zip(todo, answers):
+            found[s.key] = cache[s.key] = {"pid": pid, "at": now, "state": state, "code": code, "reason": reason}
+        try:
+            write_json(path, cache)
+        except OSError:
+            pass
+    return found
+
+
+# --- logs -----------------------------------------------------------------------
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r")
+OURS = re.compile(r"^--- herdr-app-servers start")
+RUN_START = re.compile(r"system\s+\| Listening at|^--- herdr-app-servers start")
+RUN_STOP = re.compile(r"\| Interrupting\.\.\.|\| sending SIGTERM to all processes|(SIGINT|SIGTERM) received, starting shutdown")
+COMPLAINT = re.compile(r"[Ee]rror|[Ee]xception|FATAL|[Aa]bort")
+EXITED = re.compile(r"[Ee]xited with code \d+")
+# A stack frame names a file and line; it is never the message itself.
+FRAME = re.compile(r"\.(rb|js|mjs|ts|py|go):\d+(:\d+)?(:in\b|\)|$)|\|\s+(at|from) ")
+CLOCK = re.compile(r"^\d{1,2}:\d{2}:\d{2}\s+")
+NEAR = 40  # a complaint further back than this from the first exit is old news
+
+
+def log_dir(s):
+    if s.logs:
+        return Path(os.path.expanduser(s.logs))
+    if (s.dir / "tmp").is_dir():
+        return s.dir / "tmp" / "dev-logs"
+    return STATE / "logs" / s.session
+
+
+def latest_log(s):
+    try:
+        logs = sorted(p for p in log_dir(s).glob("*.log") if p.is_file())
+    except OSError:
+        return None
+    return logs[-1] if logs else None
+
+
+def read_last_words(log):
+    """Why the log's last run ended, or None for a run someone stopped.
+
+    Gaffer's bin/dev-all last_words, plus Foreman's wording. A run starts at
+    Overmind's "Listening at" or this script's own start line. A process exiting
+    before the shutdown began is the cause: the last complaint shortly before
+    it, else the exit itself. A shutdown with no exit before it was asked for
+    (Ctrl-C, overmind quit). A run of ours that ended without either, such as a
+    bin/dev that refused to start, gets its last line."""
+    try:
+        with open(log, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 131072))
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    complaint, complaint_at, first_exit, exit_at, stopped, ours, last, n = None, -1, None, None, False, False, None, 0
+    for raw in text.splitlines():
+        line = ANSI.sub("", raw).strip()
+        if not line:
+            continue
+        n += 1
+        if RUN_START.search(line):
+            complaint, complaint_at, first_exit, exit_at, stopped, last = None, -1, None, None, False, None
+            ours = bool(OURS.search(line))
+            continue
+        if stopped:
+            continue
+        if RUN_STOP.search(line):
+            stopped = True
+        elif EXITED.search(line):
+            if first_exit is None:
+                first_exit, exit_at = line, n
+        elif first_exit is None and COMPLAINT.search(line) and not FRAME.search(line):
+            complaint, complaint_at = line, n
+        last = line
+    if first_exit:
+        answer = complaint if complaint and exit_at - complaint_at <= NEAR else first_exit
+    elif not stopped and ours:
+        answer = last
+    else:
+        answer = None
+    return CLOCK.sub("", answer)[:140] if answer else None
+
+
+def last_words(log):
+    """read_last_words, kept per log until the log changes."""
+    if not log:
+        return None
+    try:
+        st = Path(log).stat()
+    except OSError:
+        return None
+    path = STATE / "words.json"
+    cache = read_json(path, {}) or {}
+    stamp = [st.st_size, int(st.st_mtime)]
+    hit = cache.get(str(log))
+    if hit and hit.get("stamp") == stamp:
+        return hit.get("words")
+    words = read_last_words(log)
+    cache = {k: v for k, v in cache.items() if Path(k).exists()}
+    cache[str(log)] = {"stamp": stamp, "words": words}
+    try:
+        write_json(path, cache)
+    except OSError:
+        pass
+    return words
+
+
+def prune_logs(folder):
+    cutoff = time.time() - LOG_KEEP_DAYS * 86400
+    for p in folder.glob("*.log"):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}\.log", p.name) and (mtime(p) or cutoff) < cutoff:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
+def branch(folder):
+    d = Path(folder)
+    for _ in range(4):
+        git = d / ".git"
+        try:
+            if git.is_file():
+                m = re.match(r"gitdir:\s*(.+)", git.read_text().strip())
+                gd = Path(m.group(1)) if m else None
+                if gd and not gd.is_absolute():
+                    gd = d / gd
+                head = (gd / "HEAD").read_text().strip() if gd else ""
+            elif git.is_dir():
+                head = (git / "HEAD").read_text().strip()
+            else:
+                d = d.parent
+                continue
+        except OSError:
+            return None
+        return head[16:] if head.startswith("ref: refs/heads/") else head[:8] or None
+    return None
+
+
+# --- actions on disk ------------------------------------------------------------
+
+
+def action_path(s):
+    return STATE / "actions" / f"{s.session}.json"
+
+
+def result_path(s):
+    return STATE / "results" / f"{s.session}.json"
+
+
+class Lock:
+    """Brief exclusive hold on one server's action file."""
+
+    def __init__(self, s, wait=5.0):
+        self.path, self.wait = STATE / "locks" / f"{s.session}.lock", wait
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.f = open(self.path, "a+")
+        deadline = time.time() + self.wait
+        while True:
+            try:
+                fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if time.time() > deadline:
+                    self.f.close()
+                    raise TimeoutError("another herdr-app-servers is busy with it")
+                time.sleep(0.05)
+
+    def __exit__(self, *_):
+        fcntl.flock(self.f, fcntl.LOCK_UN)
+        self.f.close()
+
+
+def live_action(s):
+    a = read_json(action_path(s))
+    if not isinstance(a, dict) or time.time() - a.get("started", 0) > ACTION_TTL or not pid_alive(a.get("pid")):
+        return None
+    return a
+
+
+def reap(s):
+    """An action whose worker died (killed, or gone with a sleeping Mac)
+    becomes a failed result, so the row and a toast say so, not nothing."""
+    a = read_json(action_path(s))
+    if not isinstance(a, dict) or pid_alive(a.get("pid")):
+        return
+    try:
+        with Lock(s, wait=0.5):
+            a = read_json(action_path(s))
+            if not isinstance(a, dict) or pid_alive(a.get("pid")):
+                return
+            verb, phase = a.get("verb", "start"), a.get("phase", "queued")
+            write_json(result_path(s), {
+                "verb": verb, "ok": False, "level": "error", "run": a.get("run"),
+                "message": f"its worker stopped while {phase}, so the {verb} didn't finish (see {tilde(STATE / 'worker.log')})",
+                "finished": int(time.time()),
+            })
+            action_path(s).unlink()
+    except (TimeoutError, OSError):
+        pass
+
+
+def still_mine(s, run_id):
+    a = read_json(action_path(s))
+    return isinstance(a, dict) and a.get("run") == run_id
+
+
+def set_phase(s, run_id, phase):
+    with Lock(s):
+        a = read_json(action_path(s))
+        if isinstance(a, dict) and a.get("run") == run_id:
+            a["phase"] = phase
+            write_json(action_path(s), a)
+
+
+def finish(s, run_id, verb, ok, message, level=None):
+    """Record the outcome, unless a later action took the server over."""
+    with Lock(s):
+        if not still_mine(s, run_id):
+            return
+        write_json(result_path(s), {
+            "verb": verb, "ok": bool(ok), "level": level or ("success" if ok else "error"),
+            "message": message, "finished": int(time.time()), "run": run_id,
+        })
+        try:
+            action_path(s).unlink()
+        except OSError:
+            pass
+    say(f"{s.key}: {verb} {'ok' if ok else 'failed'}: {message}")
+
+
+# --- status -------------------------------------------------------------------
+
+
+def server_status(s, snap, health):
+    services, main_mine, main_other = [], [], []
+    for v in s.services:
+        mine, other = snap.holders(s, v)
+        if v is s.main:
+            main_mine, main_other = mine, other
+        services.append({
+            "name": v.name, "port": v.port, "url": v.url, "main": v is s.main,
+            "listening": bool(mine or other), "mine": bool(mine),
+        })
+    reason, since, alive = None, None, None
+    log = latest_log(s)
+    reap(s)
+    last = read_json(result_path(s))
+    if main_mine:
+        pid = main_mine[0]["pid"]
+        since = snap.started.get(pid)
+        state = "up"
+        if s.main.health:
+            h = health.get(s.key) or {}
+            state = h.get("state") or "up"
+            reason = h.get("reason") if state in ("error", "busy") else None
+    elif main_other:
+        h = main_other[0]
+        where = snap.cwd.get(h["pid"])
+        state = "foreign"
+        reason = f"port {s.main.port} is in use by {h['command']} (pid {h['pid']}){' in ' + tilde(where) if where else ''}"
+    else:
+        alive = snap.alive(s)
+        if alive:
+            state = "boot"
+            since = snap.sessions.get(s.session) or mtime(s.dir / ".overmind.sock")
+        else:
+            state = "down"
+            since = mtime(log) if log else None
+            stopped_by_us = isinstance(last, dict) and last.get("ok") and last.get("verb") == "stop" \
+                and (last.get("finished") or 0) >= (mtime(log) or 0) - 5
+            if isinstance(last, dict) and not last.get("ok") and last.get("verb") in ("start", "restart"):
+                reason = last.get("message")
+            elif not stopped_by_us:
+                reason = last_words(log)
+    on = bool(main_mine) or any(x["mine"] for x in services) or (alive if alive is not None else snap.alive(s))
+    action = live_action(s)
+    return {
+        "key": s.key, "id": s.id, "name": s.name, "group": s.group.key,
+        "dir": str(s.dir), "branch": branch(s.dir), "exists": s.dir.is_dir(),
+        "state": state, "reason": reason, "since": since, "on": on,
+        "url": s.open.url, "port": s.open.port, "log": str(log) if log else None,
+        "action": {k: action.get(k) for k in ("verb", "phase", "started")} if action else None,
+        "last": last if isinstance(last, dict) else None,
+        "services": services, "tunnel": s.tunnel, "owner": s.owner, "space": s.space,
+    }
+
+
+def status(cfg, servers=None, deep=False):
+    servers = cfg.servers if servers is None else servers
+    snap = Snapshot(cfg)
+    health = health_for(servers, snap, deep)
+    wanted = {s.key for s in servers}
+    groups = []
+    for g in cfg.groups:
+        rows = [server_status(s, snap, health) for s in g.servers if s.key in wanted]
+        if not rows:
+            continue
+        groups.append({
+            "key": g.key, "name": g.name, "space": g.space,
+            "services": [{"name": v.name, "port": v.port, "url": v.url, "listening": bool(snap.ports.get(v.port))}
+                         for v in g.services],
+            "servers": rows, "total": len(rows),
+            "up": sum(r["state"] == "up" for r in rows), "on": sum(r["on"] for r in rows),
+        })
+    rows = [r for g in groups for r in g["servers"]]
+    return {
+        "config": tilde(CONFIG), "home": str(HOME), "groups": groups, "total": len(rows),
+        "up": sum(r["state"] == "up" for r in rows), "active": sum(bool(r["action"]) for r in rows),
+    }
+
+
+def ago(epoch):
+    if not epoch:
+        return "-"
+    s = max(0, int(time.time() - epoch))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h{s % 3600 // 60:02d}m"
+    return f"{s // 86400}d"
+
+
+def status_cmd(names, as_json, deep):
+    cfg = Config()
+    servers = [s for s, _ in resolve(cfg, names)] if names else None
+    # A person typing `status` wants it fresh; the panel's cheap poll is --json.
+    data = status(cfg, servers, deep or not as_json)
+    if as_json:
+        print(json.dumps(data))
+        return 0
+    color = {"up": "32", "error": "31", "foreign": "31", "down": "2", "boot": "33", "busy": "33"}
+    tty = sys.stdout.isatty()
+    for g in data["groups"]:
+        infra = "  ".join(f"{v['name']}:{v['port']}{'' if v['listening'] else ' (down)'}" for v in g["services"])
+        print(f"\n{g['name']}  {g['up']}/{g['total']} up{'   ' + infra if infra else ''}")
+        for r in g["servers"]:
+            state = r["action"]["phase"] if r["action"] else r["state"]
+            shown = f"\x1b[{color.get(state, '33')}m{state:<8}\x1b[0m" if tty else f"{state:<8}"
+            print(f"  {r['id']:<12} {shown} {r['port']:<6} {ago(r['since']):<7} {(r['branch'] or '-')[:32]}")
+            if r["reason"] and state in ("error", "busy", "down", "foreign"):
+                print(f"  {'':<12} ↳ {r['reason']}")
+    print(f"\n{data['up']} of {data['total']} up")
+    return 0
+
+
+# --- start and stop -------------------------------------------------------------
+
+
+def guard_agent():
+    if OVERRIDDEN:
+        return
+    for k in AGENT_MARKERS:
+        if os.environ.get(k):
+            raise ConfigError(
+                f"refusing: {k} is set, so this looks like an agent's shell. A person starts and stops "
+                "dev servers, from Herdr's Servers panel or a terminal.")
+
+
+def tunnel_holders(name):
+    _, out, _ = run(["/bin/ps", "-axo", "pid=,command="])
+    pids = []
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        if "cloudflared" in cmd and re.search(rf"\btunnel\b.*\brun\s+{re.escape(name)}(\s|$)", cmd):
+            pids.append(int(pid))
+    return proc_facts(pids)[1] if pids else {}
+
+
+def preflight(s, snap, coming):
+    """Why s can't start now, or None. `coming` holds the keys this run starts too."""
+    if not s.dir.is_dir():
+        return f"no folder at {tilde(s.dir)}"
+    for v in s.services:
+        if v.optional:
+            continue
+        mine, other = snap.holders(s, v)
+        if other and not mine:
+            h, where = other[0], snap.cwd.get(other[0]["pid"])
+            return f"port {v.port} ({v.name}) is in use by {h['command']} (pid {h['pid']}){' in ' + tilde(where) if where else ''}"
+    owner_coming = any(o.owner and o.key in coming for o in s.group.servers if o is not s)
+    if not s.owner and not owner_coming:
+        for name in s.requires:
+            v = next(x for x in s.group.services if x.name == name)
+            if not snap.ports.get(v.port):
+                return f"{s.group.name}'s {v.name} ({v.port}) is down.{' ' + v.hint if v.hint else ''}"
+    if s.tunnel:
+        for pid, where in tunnel_holders(s.tunnel).items():
+            if inside(where, s.dir):
+                continue
+            who = s.cfg.server_for_dir(where)
+            holder = who.key if who else f"pid {pid}{' in ' + tilde(where) if where else ''}"
+            return f"the {s.tunnel} tunnel is in use by {holder}. Only one app can hold it; stop that one first."
+    return None
+
+
+def session_exists(s):
+    return bool(TMUX) and run([TMUX, "-L", s.cfg.socket, "has-session", "-t", f"={s.session}"])[0] == 0
+
+
+def leftovers(s):
+    """Pids listening on s's ports from inside its folder."""
+    found = listeners({v.port for v in s.services})
+    pids = {h["pid"] for hs in found.values() for h in hs}
+    where = proc_facts(pids)[1]
+    return sorted(p for p in pids if inside(where.get(p), s.dir))
+
+
+def clean_stale(s):
+    sock = s.dir / ".overmind.sock"
+    if sock.exists() and not overmind_running(s.dir):
+        try:
+            sock.unlink()
+        except OSError:
+            pass
+    for pidfile in [s.dir / "tmp" / "pids" / "server.pid", *s.dir.glob("*/tmp/pids/server.pid")]:
+        try:
+            pid = int(pidfile.read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if not pid_alive(pid):
+            try:
+                pidfile.unlink()
+            except OSError:
+                pass
+
+
+def launch(s, log):
+    if not TMUX:
+        return "tmux is not installed (brew install tmux)"
+    inner = f"/bin/sh -c {shlex.quote(s.start)} 2>&1 | /usr/bin/tee -ia {shlex.quote(str(log))}"
+    if (s.dir / ".envrc").exists():
+        if not DIRENV:
+            return "this folder has an .envrc, but direnv is not installed"
+        inner = f"{shlex.quote(DIRENV)} exec {shlex.quote(str(s.dir))} {inner}"
+    env = [f"{k}={os.environ[k]}" for k in KEEP_ENV if os.environ.get(k)]
+    if not os.environ.get("LANG"):
+        env.append("LANG=en_US.UTF-8")
+    env += ["SHELL=/bin/zsh", "PATH=/usr/bin:/bin:/usr/sbin:/sbin"]
+    # A fresh login shell, as a terminal would start, with only tmux's TERM kept.
+    pane = 'exec /usr/bin/env -i TERM="${TERM:-xterm-256color}" ' + " ".join(
+        shlex.quote(x) for x in env + ["/bin/zsh", "-lic", inner])
+    code, out, err = run([TMUX, "-L", s.cfg.socket, "-f", "/dev/null", "new-session", "-d",
+                          "-s", s.session, "-c", str(s.dir), "-x", "220", "-y", "50", pane])
+    if code != 0:
+        return f"tmux could not start it: {(err or out).strip()}"
+    return None
+
+
+def probe_one(s):
+    snap = Snapshot(s.cfg, [s])
+    return server_status(s, snap, health_for([s], snap, deep=True))
+
+
+def start_server(s, run_id):
+    """(ok, message, level), or None when a later action took over."""
+    snap = Snapshot(s.cfg, [s])
+    if snap.on(s):
+        return True, "already running", "success"
+    why = preflight(s, snap, set())
+    if why:
+        return False, why, "error"
+    folder = log_dir(s)
+    folder.mkdir(parents=True, exist_ok=True)
+    log = folder / time.strftime("%Y-%m-%d.log")
+    with Lock(s):
+        if not still_mine(s, run_id):
+            return None
+        clean_stale(s)
+        prune_logs(folder)
+        with open(log, "a") as f:
+            f.write(f"\n--- herdr-app-servers start {time.strftime('%Y-%m-%d %H:%M:%S')}: {s.start} ---\n")
+        err = launch(s, log)
+    if err:
+        return False, err, "error"
+    say(f"{s.key}: started `{s.start}` in tmux session {s.session}")
+    t0 = time.time()
+    while True:
+        time.sleep(2)
+        if not still_mine(s, run_id):
+            return None
+        st = probe_one(s)
+        took = int(time.time() - t0)
+        if st["state"] == "up":
+            return True, f"up after {took}s", "success"
+        if st["state"] == "error":
+            return True, f"came up with an error: {st['reason']}", "warning"
+        if st["state"] == "foreign":
+            return False, st["reason"], "error"
+        if st["state"] == "down" and took > DOWN_GRACE:
+            return False, f"did not come up: {last_words(log) or 'see ' + tilde(log)}", "error"
+        if took > SETTLE_CAP:
+            return False, f"no answer after {SETTLE_CAP // 60} minutes; it is still running", "error"
+
+
+def stop_server(s):
+    """(ok, message): stop s and wait until nothing of it holds its ports."""
+    folder = str(s.dir)
+    if not overmind_running(folder) and not session_exists(s) and not leftovers(s):
+        clean_stale(s)
+        return True, "was not running"
+    quit_sent = False
+    if overmind_running(folder):
+        run([OVERMIND, "quit"], cwd=folder)
+        quit_sent = True
+    elif session_exists(s):
+        # A pane target needs the colon: send-keys can't find a pane in "=name".
+        run([TMUX, "-L", s.cfg.socket, "send-keys", "-t", f"={s.session}:", "C-c"])
+    deadline = time.time() + STOP_WAIT
+    while time.time() < deadline:
+        om, sess, left = overmind_running(folder), session_exists(s), leftovers(s)
+        if not (om or sess or left):
+            break
+        if om and not quit_sent:
+            run([OVERMIND, "quit"], cwd=folder)
+            quit_sent = True
+        time.sleep(1)
+    forced = []
+    if overmind_running(folder):
+        run([OVERMIND, "kill"], cwd=folder)
+        forced.append("overmind kill")
+        time.sleep(2)
+    if session_exists(s):
+        run([TMUX, "-L", s.cfg.socket, "kill-session", "-t", f"={s.session}"])
+        forced.append("kill-session")
+        time.sleep(1)
+    pids = leftovers(s)
+    if pids:
+        forced.append(f"TERM {' '.join(map(str, pids))}")
+        for p in pids:
+            try:
+                os.kill(p, signal.SIGTERM)
+            except OSError:
+                pass
+        for _ in range(TERM_WAIT):
+            if not leftovers(s):
+                break
+            time.sleep(1)
+        pids = leftovers(s)
+        for p in pids:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+        if pids:
+            forced.append(f"KILL {' '.join(map(str, pids))}")
+            time.sleep(1)
+    clean_stale(s)
+    left = leftovers(s)
+    if left or session_exists(s) or overmind_running(folder):
+        return False, f"could not stop it: {'pid ' + ' '.join(map(str, left)) + ' still listens' if left else 'still running'}"
+    return True, "stopped" + (f" ({', '.join(forced)})" if forced else "")
+
+
+def one(s, verb, run_id):
+    """Do one server's part of a run. True/False, or None when it was taken over."""
+    if not still_mine(s, run_id):
+        return None
+    try:
+        if verb in ("stop", "restart") and (verb == "stop" or Snapshot(s.cfg, [s]).on(s)):
+            set_phase(s, run_id, "stopping")
+            ok, msg = stop_server(s)
+            if verb == "stop" or not ok:
+                finish(s, run_id, verb, ok, msg)
+                return ok
+        set_phase(s, run_id, "starting")
+        out = start_server(s, run_id)
+        if out is None:
+            say(f"{s.key}: {verb} taken over by a later action")
+            return None
+        ok, msg, level = out
+        finish(s, run_id, verb, ok, msg, level)
+        return ok
+    except Exception as e:
+        traceback.print_exc()
+        finish(s, run_id, verb, False, f"{type(e).__name__}: {e}")
+        return False
+
+
+def work(plan):
+    """The detached worker: owners first, then the rest a few at a time."""
+    cfg = Config()
+    verb, run_id = plan["verb"], plan["run"]
+    servers = [cfg.by_key[k] for k in plan["keys"] if k in cfg.by_key]
+    say(f"{verb} {' '.join(s.key for s in servers)} (run {run_id})")
+    owners = [s for s in servers if s.owner]
+    rest = [s for s in servers if not s.owner]
+
+    def several(group):
+        if group:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.parallel) as pool:
+                list(pool.map(lambda s: one(s, verb, run_id), group))
+
+    if verb == "stop":
+        several(rest)
+        for s in owners:
+            one(s, verb, run_id)
+        return 0
+    failed = None
+    for s in owners:
+        if one(s, verb, run_id) is False:
+            failed = s
+    if failed:
+        for s in rest:
+            if still_mine(s, run_id):
+                finish(s, run_id, verb, False, f"not started: {failed.id} did not come up")
+        return 1
+    several(rest)
+    return 0
+
+
+def act(verb, names, as_json, wait):
+    guard_agent()
+    if not names:
+        raise ConfigError(f"{verb} what? Name a server or a group")
+    cfg = Config()
+    targets = resolve(cfg, names)
+    snap = Snapshot(cfg, [s for s, _ in targets])
+    plan, skipped, refused = [], [], []
+    for s, via_group in targets:
+        on = snap.on(s)
+        if verb == "start" and on:
+            skipped.append({"key": s.key, "why": "already running"})
+        elif verb == "stop" and not on:
+            skipped.append({"key": s.key, "why": "not running"})
+        elif verb == "restart" and via_group and not on:
+            skipped.append({"key": s.key, "why": "not running"})
+        else:
+            plan.append(s)
+    coming = {s.key for s in plan} if verb != "stop" else set()
+    if verb != "stop":
+        kept = []
+        for s in plan:
+            # A running server's own ports and tunnel count as its own here.
+            why = preflight(s, snap, coming)
+            if why:
+                refused.append({"key": s.key, "why": why})
+            else:
+                kept.append(s)
+        plan = kept
+    run_id = f"{int(time.time() * 1000)}-{os.getpid()}"
+    claimed = []
+    for s in plan:
+        try:
+            with Lock(s):
+                a = live_action(s)
+                if a and not (verb == "stop" and a.get("phase") in ("queued", "starting")):
+                    refused.append({"key": s.key, "why": f"already {a.get('phase', 'busy')}"})
+                    continue
+                write_json(action_path(s), {"verb": verb, "phase": "queued", "run": run_id,
+                                            "pid": os.getpid(), "started": time.time()})
+                claimed.append(s)
+        except TimeoutError as e:
+            refused.append({"key": s.key, "why": str(e)})
+    worker = None
+    if claimed:
+        STATE.mkdir(parents=True, exist_ok=True)
+        wlog = STATE / "worker.log"
+        if (mtime(wlog) or 0) and wlog.stat().st_size > 512 * 1024:
+            wlog.write_text("")
+        plan_json = json.dumps({"verb": verb, "run": run_id, "keys": [s.key for s in claimed]})
+        with open(wlog, "ab") as f:
+            # Its own session and none of our pipes: Herdr's exec returns when
+            # this process exits, not when the worker does. And no HC_SCOPE:
+            # on another machine, herdr-core ends every process still carrying
+            # the exec's token once it returns, and the worker would go with it.
+            env = {k: v for k, v in os.environ.items() if k != "HC_SCOPE"}
+            worker = subprocess.Popen([sys.executable, os.path.realpath(__file__), "_work", plan_json],
+                                      stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT,
+                                      start_new_session=True, close_fds=True, env=env)
+        for s in claimed:
+            with Lock(s):
+                a = read_json(action_path(s))
+                if isinstance(a, dict) and a.get("run") == run_id:
+                    a["pid"] = worker.pid
+                    write_json(action_path(s), a)
+    result = {"ok": not refused, "verb": verb, "run": run_id, "started": [s.key for s in claimed],
+              "skipped": skipped, "refused": refused}
+    if wait and worker:
+        worker.wait()
+        result["results"] = {s.key: read_json(result_path(s)) for s in claimed}
+    if as_json:
+        print(json.dumps(result))
+    else:
+        ing = {"start": "starting", "stop": "stopping", "restart": "restarting"}[verb]
+        for s in claimed:
+            r = (result.get("results") or {}).get(s.key)
+            if r and r.get("run") == run_id:
+                print(f"{s.key}: {'ok' if r['ok'] else 'FAILED'}: {r['message']}")
+            else:
+                print(f"{s.key}: {ing} (log: {tilde(log_dir(s))})")
+        for x in skipped:
+            print(f"{x['key']}: skipped, {x['why']}")
+        for x in refused:
+            print(f"{x['key']}: refused: {x['why']}")
+    return 0 if claimed or not refused else 1
+
+
+def follow(s):
+    """tail -F the newest log, moving to a newer one when a restart starts it.
+    The panel's log button runs this, so a log tab it reuses is never stale."""
+    shown, child, first = "", None, True
+    try:
+        while True:
+            log = latest_log(s)
+            if log != shown:
+                if child:
+                    child.terminate()
+                    child.wait()
+                    child = None
+                if log is None:
+                    print(f"No log yet in {tilde(log_dir(s))}; waiting for one.", flush=True)
+                else:
+                    if not first:
+                        print(f"\n--- now {tilde(log)}\n", flush=True)
+                    # The first log from its last 300 lines; a newer one from its start.
+                    child = subprocess.Popen(["tail", "-n", "300" if first else "+1", "-F", str(log)])
+                shown, first = log, False
+            time.sleep(2)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        if child:
+            child.terminate()
+
+
+# --- remote: hosted servers and what they cost ------------------------------------
+
+
+class FlyError(Exception):
+    pass
+
+
+def fly_json(args):
+    if not FLY:
+        raise FlyError("fly isn't installed")
+    code, out, err = run([FLY, *args, "--json"], timeout=FLY_TIMEOUT)
+    if code != 0:
+        lines = [x for x in (err or out).strip().splitlines() if x.strip()]
+        raise FlyError(re.sub(r"^Error:\s*", "", lines[-1]) if lines else f"fly exited {code}")
+    try:
+        return json.loads(out or "null")
+    except ValueError:
+        raise FlyError("fly gave something other than JSON")
+
+
+def epoch(stamp):
+    try:
+        return int(datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+def slim_machine(m):
+    c = m.get("config") or {}
+    g = c.get("guest") or {}
+    return {
+        "state": m.get("state"), "region": m.get("region"),
+        "cpu_kind": g.get("cpu_kind") or "shared", "cpus": g.get("cpus") or 1, "memory_mb": g.get("memory_mb") or 256,
+        "group": (c.get("metadata") or {}).get("fly_process_group"),
+        "postgres": "postgres" in str(c.get("image") or ""),
+        "checks": [x.get("status") for x in m.get("checks") or []],
+        "updated": epoch(m.get("updated_at")),
+    }
+
+
+def fly_calls(app, old, now):
+    """The fly calls one app needs now: machines always, volumes and IPs when old."""
+    calls = {"machines": ["machines", "list", "-a", app]}
+    if now - ((old or {}).get("slow_at") or 0) > FLY_SLOW_TTL or (old or {}).get("missing"):
+        calls["volumes"] = ["volumes", "list", "-a", app]
+        calls["ips"] = ["ips", "list", "-a", app]
+    return calls
+
+
+def fly_answer(args):
+    try:
+        return fly_json(args), None
+    except FlyError as e:
+        return None, str(e)
+
+
+def fly_entry(old, answers, now):
+    """One app from its answers; on failure, its last good answer, marked."""
+    errors = [e for _, e in answers.values() if e]
+    if any(re.search(r"app not found|could not find app", e, re.I) for e in errors):
+        return {"missing": True, "at": now}
+    entry = dict(old or {})
+    if errors:
+        entry["error"] = errors[0]
+        return entry
+    entry.update(machines=[slim_machine(m) for m in answers["machines"][0] or []], at=now, missing=False)
+    if "volumes" in answers:
+        entry["volumes"] = [round(float(v.get("size_gb") or 0), 2) for v in answers["volumes"][0] or []]
+        entry["ipv4"] = sum(i.get("Type") == "v4" for i in answers["ips"][0] or [])
+        entry["slow_at"] = now
+    entry.pop("error", None)
+    return entry
+
+
+def size_name(m):
+    mb = m["memory_mb"]
+    return f"{m['cpu_kind']}-{m['cpus']}x {mb // 1024}GB" if mb % 1024 == 0 else f"{m['cpu_kind']}-{m['cpus']}x {mb}MB"
+
+
+def fly_item(item, apps, prices):
+    parts, errors, stale, approx, known, missing = {}, [], None, False, False, []
+    volumes, ipv4, running, main_started, main_times = 0.0, 0, [], [], []
+    for i, a in enumerate(item.apps):
+        e = apps.get(a["app"]) or {}
+        if e.get("error"):
+            errors.append(f"{a['app']}: {e['error']}")
+            if e.get("machines") is not None:
+                stale = min(stale or e["at"], e["at"])
+        if e.get("missing"):
+            missing.append(a["app"])
+        if e.get("missing") or e.get("machines") is None:
+            known = known or bool(e.get("missing"))
+            continue
+        known = True
+        volumes += sum(e.get("volumes") or [])
+        ipv4 += e.get("ipv4") or 0
+        for m in e["machines"]:
+            if m["state"] in ("destroyed", "destroying", "replacing"):
+                continue
+            label = a["label"] or ("postgres" if m["postgres"] else m["group"] if m["group"] not in (None, "app") else a["app"])
+            p = parts.setdefault(label, {"label": label, "app": a["app"], "running": 0, "stopped": 0, "cost": 0.0,
+                                         "sizes": [], "failing": False})
+            started = m["state"] == "started"
+            if started:
+                cost = m["cpus"] * prices.get(f"{m['cpu_kind']}_cpu", prices["shared_cpu"]) + m["memory_mb"] / 1024 * prices["ram_gb"]
+                p["running"] += 1
+                p["cost"] += cost
+                p["failing"] = p["failing"] or any(c not in ("passing", None) for c in m["checks"])
+                approx = approx or m["region"] not in FLY_BASE_REGIONS
+                running.append(label)
+            else:
+                p["stopped"] += 1
+            p["sizes"].append(f"{size_name(m)}{'' if started else ' (stopped)'}")
+            # The first app is the one that makes it up or down; its machines
+            # say since when (the first to start, or the last to stop).
+            if i == 0:
+                (main_started if started else main_times).append(m["updated"])
+    machine_cost = sum(p["cost"] for p in parts.values())
+    volume_cost = volumes * prices["volume_gb"]
+    ip_cost = ipv4 * prices["ipv4"]
+    if not known:
+        state = "unknown"
+    elif main_started:
+        state = "warn" if any(p["failing"] for p in parts.values()) else "up"
+    elif running:
+        state = "partial"
+    else:
+        state = "down"
+    for p in parts.values():
+        p["cost"] = round(p["cost"], 2)
+    order = {a["app"]: i for i, a in enumerate(item.apps)}
+    return {
+        "name": item.name, "kind": "fly", "state": state, "note": item.note,
+        "cost": round(machine_cost + volume_cost + ip_cost, 2), "currency": "USD", "approx": approx,
+        "machine_cost": round(machine_cost, 2), "volume_gb": round(volumes, 2), "volume_cost": round(volume_cost, 2),
+        "ipv4": ipv4, "ip_cost": round(ip_cost, 2),
+        "since": min(filter(None, main_started), default=None) if main_started else max(filter(None, main_times), default=None),
+        "parts": sorted(parts.values(), key=lambda p: (order[p["app"]], p["label"] != "web")),
+        "running": sorted(set(running)),
+        "apps": [a["app"] for a in item.apps], "missing": missing, "errors": errors, "stale": stale,
+    }
+
+
+def ask_check(c):
+    req = urllib.request.Request(c["url"], headers={"User-Agent": "herdr-app-servers"})
+    try:
+        with urllib.request.urlopen(req, timeout=CHECK_TIMEOUT) as r:
+            return {**c, "up": 200 <= r.status < 400, "code": r.status, "reason": None}
+    except urllib.error.HTTPError as e:
+        return {**c, "up": False, "code": e.code, "reason": f"HTTP {e.code}"}
+    except Exception as e:
+        return {**c, "up": False, "code": None, "reason": str(getattr(e, "reason", None) or e)[:120]}
+
+
+def server_item(item, checks):
+    ups = sum(c["up"] for c in checks)
+    state = "up" if not checks or ups == len(checks) else "partial" if ups else "down"
+    return {
+        "name": item.name, "kind": "server", "state": state, "note": item.note,
+        "cost": round(item.monthly, 2), "currency": item.currency, "approx": False,
+        "parts": [{"label": item.type, "running": item.count, "stopped": 0, "cost": round(item.monthly, 2),
+                   "sizes": [], "failing": False}],
+        "checks": checks, "since": None, "errors": [], "stale": None,
+    }
+
+
+def remote(cfg):
+    cache_path = STATE / "remote.json"
+    cache = read_json(cache_path, {}) or {}
+    apps = dict(cache.get("apps") or {})
+    now = int(time.time())
+    names = sorted({a["app"] for r in cfg.remote if r.kind == "fly" for a in r.apps})
+    checks = [c for r in cfg.remote if r.kind == "server" for c in r.checks]
+    # Every fly call and check at once: from far away, one call takes seconds.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=24) as pool:
+        app_jobs = {n: {k: pool.submit(fly_answer, args) for k, args in fly_calls(n, apps.get(n), now).items()}
+                    for n in names}
+        check_jobs = [pool.submit(ask_check, c) for c in checks]
+        for n, jobs in app_jobs.items():
+            apps[n] = fly_entry(apps.get(n), {k: j.result() for k, j in jobs.items()}, now)
+        answers = {(c["name"], c["url"]): job.result() for c, job in zip(checks, check_jobs)}
+    write_json(cache_path, {"apps": {n: apps[n] for n in names}})
+    items = []
+    for r in cfg.remote:
+        if r.kind == "fly":
+            items.append(fly_item(r, apps, cfg.fly_prices))
+        else:
+            items.append(server_item(r, [answers[(c["name"], c["url"])] for c in r.checks]))
+    total = {}
+    for x in items:
+        total[x["currency"]] = round(total.get(x["currency"], 0) + x["cost"], 2)
+    return {"items": items, "total": total, "at": now, "up": sum(x["state"] == "up" for x in items)}
+
+
+def money(amount, currency):
+    sign = {"USD": "$", "EUR": "€", "GBP": "£"}.get(currency)
+    return f"{sign}{amount:,.2f}" if sign else f"{amount:,.2f} {currency}"
+
+
+def remote_cmd(as_json):
+    cfg = Config()
+    if not cfg.remote:
+        raise ConfigError(f"no \"remote\" entries in {tilde(CONFIG)}")
+    data = remote(cfg)
+    if as_json:
+        print(json.dumps(data))
+        return 0
+    color = {"up": "32", "warn": "31", "unknown": "31", "down": "2", "partial": "33"}
+    tty = sys.stdout.isatty()
+    for x in data["items"]:
+        shown = f"\x1b[{color.get(x['state'], '33')}m{x['state']:<8}\x1b[0m" if tty else f"{x['state']:<8}"
+        what = [(f"{p['label']} {p['running']}" + (f" (+{p['stopped']} stopped)" if p["stopped"] else "")
+                 if p["running"] else f"{p['label']} stopped") for p in x["parts"] if p["running"] or p["stopped"]]
+        what += [f"{c['name']} {'up' if c['up'] else c['reason'] or 'down'}" for c in x.get("checks") or []]
+        print(f"{x['name']:<22} {shown} {money(x['cost'], x['currency']) + '/mo':>13}   {', '.join(what) or '-'}")
+        for e in x["errors"]:
+            print(f"{'':<22} ↳ {e}")
+        if x.get("missing"):
+            print(f"{'':<22} ↳ not on Fly: {', '.join(x['missing'])}")
+    print("\n" + " + ".join(f"{money(v, k)}/mo" for k, v in data["total"].items()) + "  (Fly: list prices, running machines, volumes and IPv4)")
+    return 0
+
+
+def check_cmd():
+    cfg = Config()
+    problems, seen = [], {}
+    for s in cfg.servers:
+        if not s.dir.is_dir():
+            problems.append(f"{s.key}: no folder at {tilde(s.dir)}")
+        for v in s.services:
+            if v.port in seen and seen[v.port] != s.key:
+                problems.append(f"{s.key}: port {v.port} is also {seen[v.port]}'s")
+            seen.setdefault(v.port, s.key)
+    for g in cfg.groups:
+        print(f"{g.key}: {', '.join(s.id for s in g.servers)}"
+              f"{'  [' + ', '.join(f'{v.name}:{v.port}' for v in g.services) + ']' if g.services else ''}")
+    if cfg.remote:
+        print(f"remote: {', '.join(r.name for r in cfg.remote)}")
+        if not FLY and any(r.kind == "fly" for r in cfg.remote):
+            problems.append("remote: fly isn't installed, so Fly entries can't be read")
+    for p in problems:
+        print(f"warning: {p}")
+    print(f"{len(cfg.servers)} servers in {tilde(CONFIG)}; state in {tilde(STATE)}")
+    return 1 if problems else 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "_work":
+        return work(json.loads(rest[0]))
+    flags = {a for a in rest if a.startswith("--")}
+    names = [a for a in rest if not a.startswith("--")]
+    as_json = "--json" in flags
+    try:
+        if cmd == "status":
+            return status_cmd(names, as_json, "--deep" in flags)
+        if cmd in ("start", "stop", "restart"):
+            return act(cmd, names, as_json, "--wait" in flags)
+        if cmd == "check":
+            return check_cmd()
+        if cmd == "remote":
+            return remote_cmd(as_json)
+        if cmd == "log":
+            cfg = Config()
+            targets = [s for s, _ in resolve(cfg, names)]
+            if "--follow" in flags:
+                if len(targets) != 1:
+                    raise ConfigError("log --follow takes one server")
+                return follow(targets[0])
+            for s in targets:
+                print(latest_log(s) or f"{s.key}: no log yet in {tilde(log_dir(s))}")
+            return 0
+        raise ConfigError(f"unknown command {cmd}; see --help")
+    except ConfigError as e:
+        if as_json:
+            print(json.dumps({"error": str(e)}))
+        else:
+            print(f"herdr-app-servers: {e}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

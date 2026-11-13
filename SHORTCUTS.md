@@ -58,6 +58,7 @@ Cmd+E - Model picker (sends Esc+E to the terminal)
 Cmd+K - Pick a link the agent mentioned (Enter opens, Ctrl+Y copies)
 Cmd+F - Search scrollback (Enter copies the line, Shift+Enter with context)
 Cmd+Shift+G - Git graph panel (main-plus layout)
+Cmd+Shift+J - Servers panel (main-plus layout)
 ```
 
 ## Herdr — App

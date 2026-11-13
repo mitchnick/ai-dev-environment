@@ -87,8 +87,8 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    // Graph and Automations are always offered: shared("workspace.panels") is the welcome's choice of Files/Changes.
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "graph", "automations"];
+    // Graph, Automations and Servers are always offered: shared("workspace.panels") is the welcome's choice of Files/Changes.
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "graph", "automations", "servers"];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -106,6 +106,7 @@ export default class Tabs extends View {
       .child(panelButton("graph", "Graph", "mods/git-graph/icons/graph.svg"))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .child(panelButton("automations", "Automations", "mods/automations/automations.svg"))
+      .child(panelButton("servers", "Servers", "mods/servers/server.svg"))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-plus/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-plus/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-plus/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
