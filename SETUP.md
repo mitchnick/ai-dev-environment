@@ -519,7 +519,7 @@ jq -e '.theme == "monokai-pro-spectrum" and .font == "MesloLGS Nerd Font Mono"' 
 
 Every check should pass, `find` should print nothing, and both `jq` checks should print `true`. A broken file keeps its last good version running and writes the reason to `<name>.error`, so a working window does not prove a file loaded. If the welcome changed `settings.json`, merge the exported values back; the app applies them live. `ctrl-alt-shift-escape` is the app's escape hatch: it sets the shown layout and `keys.json` aside as `*.reset-<time>` and returns to the stock `main` layout. To recover, restore `keys.json` from the export and switch layouts again.
 
-Herdr.app gets the horn icon in the Dock and Finder on its next start: `main-plus`'s top bar runs `herdr-app-icon --if-missing`, which needs `brew install librsvg`. It puts the icon back after each app update too. Run `herdr-app-icon` to set it at once.
+Herdr.app gets the horn icon in the Dock and Finder on its next start: `main-plus`'s top bar runs `herdr-app-icon --if-missing`, which needs `brew install librsvg`. Run `herdr-app-icon` to set it at once, then `herdr-app-icon --install-agent` for reliable repair after updates: a per-user LaunchAgent checks at login and every minute independently of the sidebar. Logs: `~/Library/Logs/herdr-app-icon/`. It only renders an icon when the icon resource or Finder custom-icon flag is missing.
 
 Herdr sends anonymous daily usage counts by default; Settings → Privacy shows each report, or set `"telemetry": false` in `settings.json`. The exported settings leave it on, as the source machine does. Record the owner's choice.
 

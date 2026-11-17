@@ -1,13 +1,43 @@
 #!/bin/bash
-# herdr-app-icon [--if-missing] [Herdr.app]: set the horn as Herdr.app's Finder icon (Dock,
+# herdr-app-icon [--if-missing | --install-agent] [Herdr.app]: set the horn as Herdr.app's Finder icon (Dock,
 # Finder, Cmd+Tab). The horn is workspace-chrome-plus's herdr-horn.svg, which also draws the
 # sidebar logo. Default app: /Applications/Herdr.app, else ~/Applications/Herdr.app.
-# A Herdr update replaces the bundle and drops the custom icon; workspace-chrome-plus runs
-# this with --if-missing on every app start, which does nothing while the icon is there.
+# A Herdr update replaces the bundle and drops the custom icon. --install-agent installs
+# a per-user launchd check at login and every minute, independent of the app UI.
 # It writes only Finder's custom-icon data; Contents/ and the signature are untouched.
 # Needs rsvg-convert (brew install librsvg); iconutil and swift come with macOS and the
 # Command Line Tools.
 set -euo pipefail
+# GUI apps and launchd do not inherit the interactive shell's Homebrew PATH.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+if [ "${1:-}" = "--install-agent" ]; then
+	shift
+	# Generate escaped plist values rather than interpolating paths into XML.
+	python3 - "$0" "${1:-}" <<'PYTHON'
+import os, pathlib, plistlib, sys
+home = pathlib.Path.home()
+logs = home / "Library/Logs/herdr-app-icon"
+logs.mkdir(parents=True, exist_ok=True)
+plist = home / "Library/LaunchAgents/local.herdr-app-icon.plist"
+plist.parent.mkdir(parents=True, exist_ok=True)
+args = [os.path.abspath(sys.argv[1]), "--if-missing"]
+if sys.argv[2]:
+    args.append(os.path.abspath(sys.argv[2]))
+job = dict(Label="local.herdr-app-icon", ProgramArguments=args,
+           RunAtLoad=True, StartInterval=60,
+           StandardOutPath=str(logs / "stdout.log"),
+           StandardErrorPath=str(logs / "stderr.log"))
+if os.environ.get("HERDR_APP_HOME"):
+    job["EnvironmentVariables"] = {"HERDR_APP_HOME": os.environ["HERDR_APP_HOME"]}
+plist.write_bytes(plistlib.dumps(job))
+PYTHON
+	job="$HOME/Library/LaunchAgents/local.herdr-app-icon.plist"
+	launchctl bootout "gui/$(id -u)/local.herdr-app-icon" 2>/dev/null || true
+	launchctl bootstrap "gui/$(id -u)" "$job"
+	echo "Installed icon repair: login and every 60 seconds. Logs: ~/Library/Logs/herdr-app-icon/"
+	exit 0
+fi
 
 svg="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/workspace-chrome-plus/herdr-horn.svg"
 if_missing=false
@@ -21,7 +51,13 @@ fi
 [ -f "$svg" ] || { echo "herdr-app-icon: $svg is missing; install the workspace-chrome-plus mod" >&2; exit 1; }
 [ -d "$app" ] || { echo "herdr-app-icon: Herdr.app not found; pass its path" >&2; exit 1; }
 # Finder keeps a folder's custom icon in an "Icon\r" file inside it.
-if $if_missing && [ -e "$app/Icon"$'\r' ]; then exit 0; fi
+if $if_missing && [ -s "$app/Icon"$'\r'/..namedfork/rsrc ]; then
+	finder_info="$(xattr -px com.apple.FinderInfo "$app" 2>/dev/null | tr -d '[:space:]' || true)"
+	# Finder's kHasCustomIcon bit is 0x0400 in the flags at bytes 8–9.
+	if [ "${#finder_info}" -ge 20 ] && (( (16#${finder_info:16:4} & 1024) != 0 )); then
+		exit 0
+	fi
+fi
 echo "$(date '+%F %T') herdr-app-icon: setting the horn on $app"
 command -v rsvg-convert >/dev/null 2>&1 || { echo "herdr-app-icon: needs rsvg-convert (brew install librsvg)" >&2; exit 1; }
 
