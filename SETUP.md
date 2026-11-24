@@ -407,8 +407,9 @@ put_file "$AI_ENV_REPO/pi/helpers/pi" "$HOME/.local/bin/pi"
 put_file "$AI_ENV_REPO/pi/helpers/pi-update" "$HOME/.local/bin/pi-update"
 put_file "$AI_ENV_REPO/pi/helpers/agent-session-archive" "$HOME/.local/bin/agent-session-archive"
 put_file "$AI_ENV_REPO/pi/helpers/herdr-usage" "$HOME/.local/bin/herdr-usage"
+put_file "$AI_ENV_REPO/herdr/helpers/herdr-codex-usage" "$HOME/.local/bin/herdr-codex-usage"
 chmod +x "$HOME/.local/bin/pi" "$HOME/.local/bin/pi-update" \
-  "$HOME/.local/bin/agent-session-archive" "$HOME/.local/bin/herdr-usage"
+  "$HOME/.local/bin/agent-session-archive" "$HOME/.local/bin/herdr-usage" "$HOME/.local/bin/herdr-codex-usage"
 ```
 
 `runtime-settings.json` belongs at `~/.pi/settings.json`, **not** inside `agent/`. Preserve the exact extension directory layout; helpers and tests import adjacent modules. Copy every **tracked** file under `pi/extensions/custom/` to `~/.pi/agent/extensions/`, removing only that source prefix. This includes the JSON configuration, `active-pane-ui/`, `claude-compat/`, `image-generation/`, and `model-effort-shortcuts/` directories:
@@ -643,7 +644,7 @@ It writes `~/Library/LaunchAgents/dev.dnzzl.herdr-automations.plist` and starts 
 
 ### Account usage
 
-The `main-plus` sidebar's Usage block (`mods/usage`) shows each Claude subscription and OpenAI. It only reads files. `herdr-usage`, installed in section 7, writes them using the Claude and Pi logins from section 8, so never run it with shell tracing. Start it as a login job once those logins work. Run this from the final shell environment: a LaunchAgent inherits nothing from the terminal, so the job records `PI_NODE_BIN` and `PI_CLI_PATH` for the Pi wrapper.
+The `main-plus` sidebar's Usage block (`mods/usage`) shows each Claude subscription and OpenAI. It only reads files. `herdr-usage`, installed in section 7, fetches Claude usage through Claude's login and OpenAI usage through Codex's login, with Pi's login as a fallback. Never run it with shell tracing. Start it as a login job once those logins work. Run this from the final shell environment so the job records `PI_NODE_BIN` and `PI_CLI_PATH` for the Pi wrapper.
 
 ```sh
 label=io.mitchnick.herdr-usage
@@ -825,7 +826,7 @@ jq -r '.[] | .[] | select(startswith("mod.open:")) | ltrimstr("mod.open:")' "$HO
     test -f "$HOME/.config/herdr-app/mods/$mod/main.js" || echo "keys.json opens a missing mod: $mod"
   done
 for name in herdr-app-arrange herdr-app-links herdr-app-cycle-effort claude-cycle-effort-hc herdr-app-grid \
-    herdr-app-autoname herdr-app-icon herdr-app-servers herdr-usage herdr-automations ghostty-quad ghostty-dual; do
+    herdr-app-autoname herdr-app-icon herdr-app-servers herdr-usage herdr-codex-usage herdr-automations ghostty-quad ghostty-dual; do
   test -x "$HOME/.local/bin/$name" || echo "missing: $name"
 done
 ```
@@ -1134,7 +1135,7 @@ Run `herdr config check`. Use the sidebar **menu → detach**, then launch `~/.l
 
 ### L5. Account usage in the sidebar (optional)
 
-The actual export **does include** `pi/helpers/herdr-usage`, despite older Herdr prose saying the publisher is excluded. [Section 10](#account-usage) schedules it for the Herdr app; a legacy machine uses the private runner below instead, because publishing also needs the paths and collector it sets. That publisher reads Claude login credentials and Pi's OpenAI login when refreshing usage; never run it with shell tracing. Its default Pi search only checks nvm directories, so supply `PI_BIN` explicitly for the wrapper installed here.
+The actual export **does include** `pi/helpers/herdr-usage`, despite older Herdr prose saying the publisher is excluded. [Section 10](#account-usage) schedules it for the Herdr app; a legacy machine uses the private runner below instead, because publishing also needs the paths it sets. That publisher reads Claude login credentials and Pi's OpenAI login when refreshing usage; never run it with shell tracing. Its default Pi search only checks nvm directories, so supply `PI_BIN` explicitly for the wrapper installed here.
 
 To enable usage, confirm logins and Herdr's socket first, then set absolute executable paths in the private shell environment or runner:
 
@@ -1142,13 +1143,12 @@ To enable usage, confirm logins and Herdr's socket first, then set absolute exec
 export HERDR_BIN="$HOME/.local/bin/herdr"
 export PI_BIN="$HOME/.local/bin/pi"
 export CODEX_BIN="$(command -v codex)"
-"$HOME/.local/bin/herdr-codex-usage"
 "$HOME/.local/bin/herdr-usage"
 ```
 
-Use the Codex collector **before** the publisher: it updates `~/.pi/agent/openai-usage-cache.json` through Codex's login, allowing the publisher's Pi fallback to stay unused while that cache is fresh. Claude's separate usage cache is `~/.claude/usage-cache.json`. No account data belongs in the repo. Check cache freshness and rendered tokens without printing credentials or raw account payloads. These internal usage endpoints can change; keep the feature outstanding if real responses no longer match the helper.
+The publisher runs the Codex collector when `~/.pi/agent/openai-usage-cache.json` needs a refresh and tries Pi's login if the collector is unavailable or fails. Claude's separate usage cache is `~/.claude/usage-cache.json`. No account data belongs in the repo. Check cache freshness and rendered tokens without printing credentials or raw account payloads. These internal usage endpoints can change; keep the feature outstanding if real responses no longer match the helper.
 
-For periodic updates, create a private executable runner under `~/.local/bin` that sources `~/.config/ai-dev-environment/shell.zsh`, exports the absolute `HERDR_BIN`, `PI_BIN`, `CODEX_BIN`, `PI_NODE_BIN`, `PI_CLI_PATH`, and `HERDR_SOCKET_PATH`, runs the collector first, then the publisher. Give it an explicit PATH including the selected Node, Homebrew Python/jq, and system tools. A LaunchAgent does not inherit the interactive terminal environment.
+For periodic updates, create a private executable runner under `~/.local/bin` that sources `~/.config/ai-dev-environment/shell.zsh`, exports the absolute `HERDR_BIN`, `PI_BIN`, `CODEX_BIN`, `PI_NODE_BIN`, `PI_CLI_PATH`, and `HERDR_SOCKET_PATH`, then runs the publisher. Give it an explicit PATH including the selected Node, Homebrew Python/jq, and system tools. A LaunchAgent does not inherit the interactive terminal environment.
 
 Create a user plist under `~/Library/LaunchAgents/` with a unique label, `KeepAlive` true, `RunAtLoad` true, and `ProgramArguments` of `/bin/bash -c 'while true; do <runner>; sleep 120; done'` with the runner's absolute path. Do not use `StartInterval`: macOS can silently stop re-arming it while `launchctl` still reports the job as healthy. With the loop, the job has a live PID, so `launchctl print gui/$(id -u)/<label>` showing a `pid` is a real health check. Use `plutil -lint`, then `launchctl bootstrap gui/$(id -u) <absolute-plist-path>` and `launchctl kickstart gui/$(id -u)/<label>`. Replace the angle-bracket placeholders first. Record label/path for rollback; do not overwrite an existing job. Verify a scheduled run refreshes the cache and visible tokens. The publisher returns early without a socket or workspace, so exit status alone is insufficient. It publishes on the selected/last local workspace; a patched sidebar can display those tokens once. Stock config displays them in workspace rows.
 

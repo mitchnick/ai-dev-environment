@@ -98,6 +98,9 @@ def cache_payload(result):
                 "reset_at": window.get("resetsAt"),
                 "limit_window_seconds": (window.get("windowDurationMins") or 0) * 60,
             }
+            if window.get("resetsAt") is not None:
+                # Herdr derives the reading time from the two reset fields.
+                windows[target]["reset_after_seconds"] = window["resetsAt"] - int(time.time())
     if "primary_window" not in windows:
         raise RuntimeError("Codex returned no primary usage window")
     return {"rate_limit": windows, "source": "codex-app-server"}

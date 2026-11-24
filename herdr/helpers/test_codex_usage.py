@@ -2,6 +2,7 @@ import importlib.machinery
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 loader = importlib.machinery.SourceFileLoader(
     "codex_usage", str(Path(__file__).with_name("herdr-codex-usage")),
@@ -20,11 +21,13 @@ class CodexUsageTest(unittest.TestCase):
                 "secondary": {"usedPercent": 49, "resetsAt": 456, "windowDurationMins": 10080},
             }},
         }
-        self.assertEqual(usage.cache_payload(result), {
+        with patch.object(usage.time, "time", return_value=100):
+            payload = usage.cache_payload(result)
+        self.assertEqual(payload, {
             "source": "codex-app-server",
             "rate_limit": {
-                "primary_window": {"used_percent": 0, "reset_at": 123, "limit_window_seconds": 18000},
-                "secondary_window": {"used_percent": 49, "reset_at": 456, "limit_window_seconds": 604800},
+                "primary_window": {"used_percent": 0, "reset_at": 123, "reset_after_seconds": 23, "limit_window_seconds": 18000},
+                "secondary_window": {"used_percent": 49, "reset_at": 456, "reset_after_seconds": 356, "limit_window_seconds": 604800},
             },
         })
 

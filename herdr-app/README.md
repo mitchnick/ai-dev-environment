@@ -173,7 +173,7 @@ LaunchAgent ([SETUP section 10](../SETUP.md#account-usage)), does the fetching:
 |---|---|
 | `~/.claude/usage-accounts/<email>.json` | The last reading for each Claude subscription |
 | `~/.claude/usage-accounts/.active` | The account `claude` runs as on this machine |
-| `~/.pi/agent/openai-usage-cache.json` | The last OpenAI reading, through Pi's login |
+| `~/.pi/agent/openai-usage-cache.json` | The last OpenAI reading, from Codex's account limits with Pi's login as a fallback |
 
 `/login` swaps one subscription for another here, and each keeps its last
 reading, so a subscription signed in nowhere goes stale rather than disappearing.

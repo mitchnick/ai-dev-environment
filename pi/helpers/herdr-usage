@@ -147,9 +147,14 @@ REMOTE
     && mv "$CLAUDE_ACCOUNTS/$email.json.tmp.$$" "$CLAUDE_ACCOUNTS/$email.json"
 done
 
-# OpenAI Codex/ChatGPT usage. Pi's auth command refreshes OAuth before printing
-# the bearer token. The token stays in this process and never reaches logs.
-if [ "$(cache_age "$OPENAI_CACHE")" -ge "$FETCH_TTL" ]; then
+# Prefer the account Codex uses for /status. The collector replaces the cache
+# atomically on success. If it is absent or fails, try Pi's login below.
+read_codex_usage() {
+  local collector="$(dirname "$0")/herdr-codex-usage"
+  [ -x "$collector" ] && "$collector" --cache "$OPENAI_CACHE"
+}
+
+if [ "$(cache_age "$OPENAI_CACHE")" -ge "$FETCH_TTL" ] && ! read_codex_usage; then
   PI=$(find_pi)
   account=$(jq -r '."openai-codex".accountId // empty' "$PI_AGENT_DIR/auth.json" 2>/dev/null)
   if [ -n "$PI" ] && [ -n "$account" ]; then
